@@ -2002,7 +2002,10 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
         } catch (cancelled: CancellationException) { throw cancelled }
         catch (auth: YouTubeAuthRequired) { youTubeAccountLost(auth); null }
         catch (_: Exception) { null }
-        return personal ?: withContext(Dispatchers.IO) { YouTubeMusic.watchQueue(target, WAVE_RADIO_SIZE) }
+        val queue = personal ?: withContext(Dispatchers.IO) { YouTubeMusic.watchQueue(target, WAVE_RADIO_SIZE) }
+        // The radio opens with the seed's own video: under another title ("Official Video") it would
+        // pass for a different song and play right after the seed.
+        return queue.filterNot { it.id == seed.id || it.youTubeVideoId == videoId }
     }
 
     /** With nothing in the player: the last track played, then a liked track, then music for the time of day. */
