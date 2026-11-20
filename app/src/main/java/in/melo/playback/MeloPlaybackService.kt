@@ -157,9 +157,9 @@ class MeloPlaybackService : MediaSessionService() {
     internal class YouTubeChain(val recent: CacheDataSource.Factory, val kept: CacheDataSource.Factory)
 
     internal companion object {
-        /** Downloads first, then the recent cache, then the network. Nothing is written to downloads while listening. */
+        /** YouTube Music and SoundCloud: downloads first, then the recent cache, then the network. Nothing is written to downloads while listening. */
         fun youTubeCacheChain(context: android.content.Context): YouTubeChain {
-            val youtube = YouTubeDataSource.Factory(context)
+            val youtube = DirectDataSourceFactory(context)
             val flags = CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR
             val recent = CacheDataSource.Factory().setCache(AudioCache.cache(context)).setCacheKeyFactory(AudioCache.keys)
                 .setUpstreamDataSourceFactory(youtube).setFlags(flags)

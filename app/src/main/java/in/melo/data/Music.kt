@@ -25,12 +25,13 @@ data class Music(
 )
 
 /** Where a track's audio comes from. */
-enum class MusicSource { Local, Spotify, YouTubeMusic }
+enum class MusicSource { Local, Spotify, YouTubeMusic, SoundCloud }
 
 val Music.source: MusicSource get() = musicSourceOf(id)
 
 fun musicSourceOf(id: String): MusicSource = when {
     isLocalTrackId(id) -> MusicSource.Local
+    `in`.melo.data.soundcloud.isSoundCloudId(id) -> MusicSource.SoundCloud
     id.startsWith(`in`.melo.data.youtube.YTM_TRACK_PREFIX) || id.startsWith(`in`.melo.data.youtube.YTM_ALBUM_PREFIX) ||
         id.startsWith(`in`.melo.data.youtube.YTM_ARTIST_PREFIX) -> MusicSource.YouTubeMusic
     else -> MusicSource.Spotify
