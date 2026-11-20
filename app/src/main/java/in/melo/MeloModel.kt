@@ -73,11 +73,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -223,7 +226,9 @@ private data class HomeRecommendationRequest(
 )
 
 class MeloModel(private val app: Application) : AndroidViewModel(app) {
-    val player = SpotifyPlayer(app, viewModelScope)
+    /** Runs the player connection and My Wave; it outlives the model while a wave plays on (see [onCleared]). */
+    private val playerScope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.Main.immediate)
+    val player = SpotifyPlayer(app, playerScope)
     private val pinnedStore = PinnedStore(app)
     val pins = pinnedStore.pins
     fun togglePin(item: Music) = pinnedStore.toggle(item)
@@ -1895,6 +1900,94 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
             catch (failure: Exception) { mutableMessage.value = readable(failure) }
         }
     }
+    /** My Wave: an endless queue of tracks similar to what the listener plays (see [MyWaveController]). */
+    private val waveLazy = lazy {
+        MyWaveController(
+            playerScope, player, online,
+            similar = ::similarTracks,
+            coldStart = ::waveColdStart,
+            recentlyHeard = ::waveRecentlyHeard,
+            isLiked = { track -> track.id in favorites.value || youTubeLikes.value.any { it.id == track.id } },
+            describe = ::describeWaveFailure,
+        ).also { fresh ->
+            WaveKeeper.register(fresh)
+            WaveKeeper.takeBack()?.let(fresh::adopt)
+        }
+    }
+    private val wave by waveLazy
+    val myWave: StateFlow<WaveUi> get() = wave.state
+    fun startMyWave() {
+        WaveKeeper.stopAll(except = wave)
+        wave.start()
+    }
+    fun dismissMyWaveFailure() = wave.dismissFailure()
+
+    init {
+        // A wave that went on playing while the app was closed comes back to this screen at once.
+        if (WaveKeeper.holds) wave
+    }
+
+    /**
+     * Tracks similar to [seed], from the service it belongs to: SoundCloud stations, Spotify radio
+     * with an account, and otherwise the YouTube Music radio of the track or of its match.
+     */
+    private suspend fun similarTracks(seed: Music): List<Music> {
+        if (seed.isSoundCloudTrack) return withContext(Dispatchers.IO) { SoundCloud.station(seed) }
+        // A wave taken back at start-up must not send Spotify tracks to YouTube Music while the
+        // Spotify session is still being restored.
+        if (seed.source == `in`.melo.data.MusicSource.Spotify) {
+            kotlinx.coroutines.withTimeoutOrNull(SPOTIFY_RESTORE_WAIT_MS) {
+                mutableAccount.first { !it.restoring }
+            }
+        }
+        val spotifyRadio = radio
+        if (seed.source == `in`.melo.data.MusicSource.Spotify && catalog != null && spotifyRadio != null) {
+            return spotifyRadio.station(seed).tracks
+        }
+        val videoId = seed.youTubeVideoId ?: withContext(Dispatchers.IO) {
+            `in`.melo.data.youtube.TrackMatcher.resolve(`in`.melo.data.youtube.MatchQuery(
+                key = seed.id, title = seed.title, artists = seed.subtitle,
+                durationMs = seed.durationMs, album = seed.album,
+            ))
+        } ?: throw YouTubeFailure("YouTube Music could not find this track.")
+        val target = `in`.melo.data.YouTubeWatchTarget("RDAMVM$videoId", videoId)
+        // The account's radio follows its taste; without it, or when it is refused, the public one.
+        val personal = if (!YouTubeAccount.signedIn) null else try {
+            withContext(Dispatchers.IO) { YouTubeLibrary.watchQueue(target, WAVE_RADIO_SIZE) }
+        } catch (cancelled: CancellationException) { throw cancelled }
+        catch (auth: YouTubeAuthRequired) { youTubeAccountLost(auth); null }
+        catch (_: Exception) { null }
+        return personal ?: withContext(Dispatchers.IO) { YouTubeMusic.watchQueue(target, WAVE_RADIO_SIZE) }
+    }
+
+    /** With nothing in the player: the last track played, then a liked track, then music for the time of day. */
+    private suspend fun waveColdStart(): WaveStart? {
+        withContext(Dispatchers.IO) { listeningHistory.load() }
+        listeningHistory.entries.value.firstOrNull { player.canPlay(it.track) }?.track?.let { return WaveStart(it, WaveOrigin.HISTORY) }
+        mutableLibrary.value.content?.savedTracks?.take(LIKED_SEEDS)?.randomOrNull()?.let { return WaveStart(it, WaveOrigin.LIKES) }
+        val mood = HomeRecommendationEngine.moodFor(java.time.LocalTime.now().hour)
+        val title = mood.name.lowercase(Locale.ROOT).replace('_', ' ')
+        val tracks = HomeRecommendationEngine.queue(HomeRecommendationPick(
+            item = Music("melo:home-mood:${mood.name}", title, "", MusicKind.Playlist),
+            type = HomeRecommendationType.MOOD, title = title, mood = mood,
+        ))
+        val first = tracks.firstOrNull() ?: return null
+        return WaveStart(first, WaveOrigin.MOOD, opening = tracks)
+    }
+
+    /** The tracks played in the last days, which the wave leaves for later. */
+    private suspend fun waveRecentlyHeard(): List<Music> {
+        withContext(Dispatchers.IO) { listeningHistory.load() }
+        val since = System.currentTimeMillis() - WAVE_HEARD_WINDOW_MS
+        return listeningHistory.entries.value.asSequence().takeWhile { it.playedAt >= since }.take(WAVE_HEARD_LIMIT).map { it.track }.toList()
+    }
+
+    private fun describeWaveFailure(failure: Exception): String = when {
+        !online.value -> app.getString(`in`.melo.R.string.my_wave_offline)
+        failure is WaveEmpty -> app.getString(`in`.melo.R.string.my_wave_failed)
+        else -> readable(failure)
+    }
+
     /** Album and artists of a track, read through the catalogue contract used by detail pages. */
     /**
      * The album and artists of a track. Spotify tracks use Spotify's pages when an account is signed in;
@@ -2043,10 +2136,13 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
     /** Without a Spotify account, Spotify tracks play through their YouTube Music match. */
     fun play(queue: List<Music>, index: Int = 0) {
         val tracks = withLocalFiles(queue)
-        val selected = tracks.getOrNull(index)
-        if (selected != null && selected.isLocalTrack && selected.mediaUri == null) {
+        val selected = tracks.getOrNull(index) ?: return
+        if (selected.isLocalTrack && selected.mediaUri == null) {
             mutableMessage.value = app.getString(`in`.melo.R.string.local_file_missing, selected.title); return
         }
+        if (!player.canPlay(selected)) return
+        // Anything the listener starts replaces My Wave, wherever it runs.
+        WaveKeeper.stopAll()
         player.play(tracks, index)
     }
 
@@ -2392,7 +2488,12 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
     override fun onCleared() {
         SoundCloud.flushPermalinks()
         spotifyPlaylists.close()
-        player.close()
+        val closePlayer = { player.close(); playerScope.cancel() }
+        // The service plays on when the app is swiped away: a wave that plays keeps growing until the
+        // next model takes it back. Paused, it lets the service stop.
+        if (!waveLazy.isInitialized()) { closePlayer(); return }
+        if (wave.running && wavePlaying(player.state.value)) WaveKeeper.keep(wave, closePlayer)
+        else { WaveKeeper.unregister(wave); closePlayer() }
     }
     private fun readable(failure: Exception): String = when (failure) {
         is SoundCloudFailure -> readableSoundCloud(failure)
@@ -2619,6 +2720,14 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
 
     companion object {
         const val LIKED_SONGS = "spotify:collection:tracks"
+        /** Tracks asked from a YouTube Music radio for one batch of My Wave. */
+        private const val WAVE_RADIO_SIZE = 50
+        /** The longest a Spotify-seeded batch waits for the saved Spotify session to come back. */
+        private const val SPOTIFY_RESTORE_WAIT_MS = 15_000L
+        /** A wave started from the likes picks its seed among the latest ones. */
+        private const val LIKED_SEEDS = 50
+        private const val WAVE_HEARD_WINDOW_MS = 7L * 24 * 60 * 60 * 1000
+        private const val WAVE_HEARD_LIMIT = 300
         private const val PODCAST_FEED_TTL_MS = 6L * 60 * 60 * 1000
         private const val YOUTUBE_PAGE_TTL_MS = 24L * 60 * 60 * 1000
         private const val SEARCH_DEBOUNCE_MS = 250L
