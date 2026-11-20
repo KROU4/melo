@@ -150,6 +150,27 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
         player.addMediaItems(player.currentMediaItemIndex + 1, valid.map { mediaItem(it, queued = true) })
         queueChanged = true; update(player)
     } }
+    /** Adds radio behind the current context only while its seed is still the current track. */
+    fun extendContext(seedId: String, tracks: List<Music>) {
+        val player = controller
+        if (player == null) {
+            val (pendingTracks, index) = pending ?: return
+            if (pendingTracks.getOrNull(index)?.id != seedId) return
+            val known = pendingTracks.mapTo(HashSet(), Music::id)
+            val added = tracks.filter(Music::isPlayableTrack).filter { known.add(it.id) }
+            if (added.isEmpty()) return
+            pending = (pendingTracks + added) to index
+            ShuffleMemory.original = ShuffleMemory.original?.let { it + added }
+            return
+        }
+        if (player.currentMediaItem?.mediaId != seedId) return
+        val known = (before + queue + after).mapTo(HashSet(), Music::id)
+        val added = tracks.filter(Music::isPlayableTrack).filter { known.add(it.id) }
+        if (added.isEmpty()) return
+        after = after + added
+        ShuffleMemory.original = ShuffleMemory.original?.let { it + added }
+        update(player)
+    }
     /** The whole context and the position of the current track in it. */
     fun context(): Pair<List<Music>, Int> = (before + queue) + after to before.size + mutableState.value.index
     /** Keeps a margin of tracks on both sides of the current one, and the player small. */

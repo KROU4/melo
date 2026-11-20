@@ -23,10 +23,12 @@ import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -145,15 +147,20 @@ fun HomeGradientTopBar(
     onReorderPinsClick: (() -> Unit)? = null,
     onHistoryClick: () -> Unit,
     profileImageUrl: String? = null,
+    profileName: String? = null,
+    profileHandle: String? = null,
+    spotifyConnected: Boolean = false,
     onProfileClick: (() -> Unit)? = null,
     isScrolled: Boolean = false,
     refreshing: Boolean = false,
     pullFraction: () -> Float = { 0f },
     animateLogo: Boolean = true,
+    settingsButtonDirect: Boolean = false,
 ) {
     val colors = MaterialTheme.colorScheme
     var menuExpanded by remember { mutableStateOf(false) }
     var dialSettingsExpanded by remember { mutableStateOf(false) }
+    var accountMenuExpanded by remember { mutableStateOf(false) }
     val statusBarInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
     MeloStatusBarStyle(color = colors.background)
     Box(Modifier.fillMaxWidth()) {
@@ -185,14 +192,19 @@ fun HomeGradientTopBar(
             Box {
                 IconButton(
                     onClick = {
-                        if (homeDialSettingsContent != null) dialSettingsExpanded = true
+                        if (settingsButtonDirect) onSettingsClick()
+                        else if (homeDialSettingsContent != null) dialSettingsExpanded = true
                         else menuExpanded = true
                     },
                     modifier = Modifier.size(48.dp),
                 ) {
-                    Icon(Icons.Rounded.MoreVert, stringResource(R.string.player_cd_more_options))
+                    if (settingsButtonDirect) {
+                        Icon(painterResource(R.drawable.rounded_settings_24), stringResource(R.string.common_settings))
+                    } else {
+                        Icon(Icons.Rounded.MoreVert, stringResource(R.string.player_cd_more_options))
+                    }
                 }
-                if (homeDialSettingsContent == null) {
+                if (homeDialSettingsContent == null && !settingsButtonDirect) {
                     MeloMenu(expanded = menuExpanded, onDismiss = { menuExpanded = false }) {
                         MeloMenuItem(
                             label = stringResource(R.string.common_settings),
@@ -206,7 +218,7 @@ fun HomeGradientTopBar(
                 }
             }
             if (onProfileClick != null) {
-                IconButton(onClick = onProfileClick, modifier = Modifier.size(48.dp)) {
+                IconButton(onClick = { accountMenuExpanded = true }, modifier = Modifier.size(48.dp)) {
                     if (!profileImageUrl.isNullOrBlank()) {
                         AsyncImage(
                             model = profileImageUrl,
@@ -229,15 +241,28 @@ fun HomeGradientTopBar(
         HomeDialSettingsOverlay(
             content = homeDialSettingsContent,
             onDismiss = { dialSettingsExpanded = false },
-            onSettingsClick = {
-                dialSettingsExpanded = false
-                onSettingsClick()
-            },
             onReorderPinsClick = onReorderPinsClick?.let { callback ->
                 {
                     dialSettingsExpanded = false
                     callback()
                 }
+            },
+        )
+    }
+    if (accountMenuExpanded && onProfileClick != null) {
+        HomeAccountMenuOverlay(
+            profileName = profileName,
+            profileHandle = profileHandle,
+            profileImageUrl = profileImageUrl,
+            spotifyConnected = spotifyConnected,
+            onDismiss = { accountMenuExpanded = false },
+            onManageAccountsClick = {
+                accountMenuExpanded = false
+                onProfileClick()
+            },
+            onSettingsClick = {
+                accountMenuExpanded = false
+                onSettingsClick()
             },
         )
     }
@@ -247,7 +272,6 @@ fun HomeGradientTopBar(
 private fun HomeDialSettingsOverlay(
     content: @Composable () -> Unit,
     onDismiss: () -> Unit,
-    onSettingsClick: () -> Unit,
     onReorderPinsClick: (() -> Unit)?,
 ) {
     val colors = MaterialTheme.colorScheme
@@ -259,9 +283,13 @@ private fun HomeDialSettingsOverlay(
         SideEffect { dialogWindow?.setDimAmount(0f) }
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val statusInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+            val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             val panelTop = statusInset + 10.dp
-            val panelMaxHeight = (maxHeight - panelTop - 16.dp).coerceAtLeast(220.dp)
-            val panelWidth = (maxWidth - 24.dp).coerceAtMost(320.dp)
+            val availableHeight = maxHeight - panelTop - navigationInset - 16.dp
+            // Let the home-dial controls use the screen below the system bars so the whole menu
+            // fits without scrolling on normal phone layouts. Keep the scroll fallback for short windows.
+            val panelMaxHeight = availableHeight.coerceAtLeast(220.dp)
+            val panelWidth = minOf(maxWidth * 0.72f, maxWidth - 24.dp, 288.dp)
             val shape = MeloLayout.PanelShape
             val noRipple = remember { MutableInteractionSource() }
             Box(
@@ -304,14 +332,123 @@ private fun HomeDialSettingsOverlay(
                             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
                     ) {
                         content()
+                        if (onReorderPinsClick != null) {
+                            HorizontalDivider(
+                                Modifier.padding(horizontal = 16.dp, vertical = MeloLayout.Space1),
+                                color = colors.onSurface.copy(alpha = MeloAlpha.Divider),
+                            )
+                            OverlayPanelAction(
+                                label = stringResource(R.string.home_dial_reorder_pins),
+                                icon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
+                                onClick = onReorderPinsClick,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeAccountMenuOverlay(
+    profileName: String?,
+    profileHandle: String?,
+    profileImageUrl: String?,
+    spotifyConnected: Boolean,
+    onDismiss: () -> Unit,
+    onManageAccountsClick: () -> Unit,
+    onSettingsClick: () -> Unit,
+) {
+    val colors = MaterialTheme.colorScheme
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect { dialogWindow?.setDimAmount(0f) }
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val statusInset = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+            val navigationInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+            val panelTop = statusInset + 10.dp
+            val availableHeight = maxHeight - panelTop - navigationInset - 16.dp
+            val panelMaxHeight = minOf(maxHeight * 0.72f, availableHeight).coerceAtLeast(250.dp)
+            val panelWidth = (maxWidth - 24.dp).coerceAtLeast(0.dp)
+            val shape = MeloLayout.PanelShape
+            val noRipple = remember { MutableInteractionSource() }
+            Box(
+                Modifier.matchParentSize()
+                    .background(colors.scrim.copy(alpha = MeloAlpha.Disabled))
+                    .clickable(interactionSource = noRipple, indication = null, onClick = onDismiss),
+            )
+            AnimatedVisibility(
+                visible = true,
+                enter = fadeIn(tween(160)) + scaleIn(
+                    animationSpec = tween(180),
+                    initialScale = 0.96f,
+                    transformOrigin = TransformOrigin(1f, 0f),
+                ),
+                modifier = Modifier.align(Alignment.TopEnd).zIndex(2f),
+            ) {
+                Surface(
+                    modifier = Modifier.padding(top = panelTop, end = 12.dp)
+                        .width(panelWidth)
+                        .heightIn(max = panelMaxHeight)
+                        .shadow(20.dp, shape)
+                        .border(
+                            BorderStroke(0.75.dp, Brush.verticalGradient(listOf(
+                                colors.onSurface.copy(alpha = 0.22f),
+                                colors.onSurface.copy(alpha = 0.06f),
+                                colors.onSurface.copy(alpha = 0.12f),
+                            ))),
+                            shape,
+                        ),
+                    shape = shape,
+                    color = colors.surface,
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth()
+                            .background(Brush.verticalGradient(listOf(
+                                colors.onSurface.copy(alpha = if (LocalSurfaceGradients.current) 0.025f else 0f),
+                                Color.Transparent,
+                            )))
+                            .verticalScroll(rememberScrollState())
+                            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {},
+                    ) {
+                        Text(
+                            text = stringResource(R.string.home_account_menu_title),
+                            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 8.dp),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        HomeAccountServiceRow(
+                            title = stringResource(R.string.search_source_youtube),
+                            detail = profileName?.let { name ->
+                                val handle = profileHandle?.takeIf(String::isNotBlank)
+                                if (handle == null) name else "$name · $handle"
+                            },
+                            connected = profileName != null,
+                            imageUrl = profileImageUrl,
+                            useYouTubeIcon = true,
+                        )
+                        HomeAccountServiceRow(
+                            title = stringResource(R.string.search_source_spotify),
+                            detail = null,
+                            connected = spotifyConnected,
+                            useYouTubeIcon = false,
+                        )
                         HorizontalDivider(
                             Modifier.padding(horizontal = 16.dp, vertical = MeloLayout.Space1),
                             color = colors.onSurface.copy(alpha = MeloAlpha.Divider),
                         )
-                        if (onReorderPinsClick != null) OverlayPanelAction(
-                            label = stringResource(R.string.home_dial_reorder_pins),
-                            icon = { Icon(Icons.Rounded.SwapVert, contentDescription = null) },
-                            onClick = onReorderPinsClick,
+                        OverlayPanelAction(
+                            label = stringResource(R.string.home_account_manage),
+                            icon = { Icon(Icons.Rounded.AccountCircle, contentDescription = null) },
+                            onClick = onManageAccountsClick,
+                        )
+                        HorizontalDivider(
+                            Modifier.padding(horizontal = 16.dp, vertical = MeloLayout.Space1),
+                            color = colors.onSurface.copy(alpha = MeloAlpha.Divider),
                         )
                         OverlayPanelAction(
                             label = stringResource(R.string.common_settings),
@@ -326,8 +463,49 @@ private fun HomeDialSettingsOverlay(
 }
 
 @Composable
+private fun HomeAccountServiceRow(
+    title: String,
+    detail: String?,
+    connected: Boolean,
+    imageUrl: String? = null,
+    useYouTubeIcon: Boolean,
+) {
+    Row(
+        Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        if (useYouTubeIcon && connected && !imageUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = null,
+                modifier = Modifier.size(44.dp).clip(CircleShape),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) {
+                if (useYouTubeIcon) {
+                    Icon(painterResource(R.drawable.ic_source_youtube_music), null, modifier = Modifier.size(28.dp), tint = MaterialTheme.colorScheme.secondary)
+                } else {
+                    Icon(painterResource(R.drawable.ic_source_spotify), null, modifier = Modifier.size(44.dp), tint = MaterialTheme.colorScheme.secondary)
+                }
+            }
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Medium, maxLines = 1)
+            Text(
+                text = detail ?: stringResource(if (connected) R.string.home_account_connected else R.string.home_account_not_connected),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+@Composable
 private fun OverlayPanelAction(label: String, icon: @Composable () -> Unit, onClick: () -> Unit) {
-    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+    TextButton(onClick = onClick, modifier = Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 8.dp)) {
         Box(Modifier.size(30.dp), contentAlignment = Alignment.Center) { icon() }
         Text(
             text = label,

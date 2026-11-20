@@ -113,8 +113,8 @@ fun PodcastsScreen(model: MeloModel, navController: NavHostController, paddingVa
     val loadingMore = podcastState.loadingMore
     val searchFailedMessage = stringResource(R.string.podcast_search_failed)
 
-    LaunchedEffect(settings.youtubeContentCountry, youtubeAccount) { model.loadPodcastFeed() }
-    LaunchedEffect(query, searchRetry, settings.youtubeContentCountry) {
+    LaunchedEffect(youtubeAccount) { model.loadPodcastFeed() }
+    LaunchedEffect(query, searchRetry) {
         val term = query.trim()
         if (term.length < 2) {
             searchShelves = emptyList()

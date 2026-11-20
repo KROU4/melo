@@ -103,6 +103,7 @@ fun YouTubeExploreScreen(model: MeloModel, navController: NavHostController, pad
                 profileImageUrl = youtubeAccount?.photoUrl,
                 onProfileClick = { navController.navigateSafely(Screen.SettingsCategory.createRoute("account")) },
                 isScrolled = false,
+                settingsButtonDirect = true,
             )
         },
     ) { innerPadding ->

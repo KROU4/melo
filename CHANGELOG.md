@@ -6,6 +6,25 @@
 - Add a Russian translation.
 - Keep bottom navigation labels on one line on narrow screens and at large font sizes.
 
+## Melo 1.2.0
+
+### Home
+
+- Speed Dials refresh more smoothly, with improved Lucky and History tiles.
+- The Mixes dial can show Spotify playlists when your account is connected.
+
+### Playback
+
+- Play a song on its own and radio recommendations will follow.
+
+### Player
+
+- Track titles and artist names stay visible more reliably.
+
+### Settings
+
+- Account options and settings are easier to find.
+
 ## Melo 1.0.0 — Public launch
 
 - Release Melo as a standalone Android app with the in.melo application ID.

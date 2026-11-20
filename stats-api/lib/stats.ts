@@ -33,8 +33,8 @@ let redisClient: Redis | undefined;
 
 function redis(): Redis {
   if (redisClient) return redisClient;
-  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.STORAGE_URL;
-  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.STORAGE_TOKEN;
+  const url = process.env.UPSTASH_REDIS_REST_URL ?? process.env.KV_REST_API_URL ?? process.env.STORAGE_URL;
+  const token = process.env.UPSTASH_REDIS_REST_TOKEN ?? process.env.KV_REST_API_TOKEN ?? process.env.STORAGE_TOKEN;
   if (!url || !token) {
     throw new Error("Stats storage is not configured.");
   }

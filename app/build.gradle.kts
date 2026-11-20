@@ -20,6 +20,11 @@ val updateRepository = providers.gradleProperty("meloUpdateRepository").getOrEls
 require(updateRepository.isEmpty() || updateRepository.matches(Regex("[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"))) {
     "meloUpdateRepository must be owner/repository"
 }
+val statsEndpoint = providers.gradleProperty("meloStatsEndpoint")
+    .getOrElse("https://api.melo.aarushsagar.com/api/presence")
+require(statsEndpoint.isEmpty() || statsEndpoint.matches(Regex("https://[A-Za-z0-9.-]+/api/presence"))) {
+    "meloStatsEndpoint must be an HTTPS /api/presence URL"
+}
 
 val nativeRuntime = providers.gradleProperty("nativeRuntime").map(String::toBoolean).getOrElse(true)
 val releaseSigningFile = rootProject.file(".signing/melo-release.properties")
@@ -36,12 +41,13 @@ android {
         applicationId = providers.gradleProperty("meloTestApplicationId").getOrElse("in.melo")
         minSdk = 26
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.2.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("boolean", "NATIVE_RUNTIME", nativeRuntime.toString())
         // A fork must never offer the upstream APK as an update.
         buildConfigField("String", "UPDATE_REPOSITORY", "\"$updateRepository\"")
+        buildConfigField("String", "MELO_STATS_ENDPOINT", "\"$statsEndpoint\"")
         buildConfigField("boolean", "FORCE_OFFLINE", project.hasProperty("meloNoInternet").toString())
     }
 

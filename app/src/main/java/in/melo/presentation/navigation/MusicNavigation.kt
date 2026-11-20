@@ -18,6 +18,6 @@ fun NavController.openMusic(ui: PlayerViewModel, item: Music) {
             navigateSafely(Screen.PlaylistDetail.createRoute(item.id))
         }
         MusicKind.Radio -> navigateSafely(Screen.PlaylistDetail.createRoute(item.id))
-        MusicKind.Track -> ui.model.play(listOf(item), 0)
+        MusicKind.Track -> ui.playTrack(item)
     }
 }

@@ -20,7 +20,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.MarqueeSpacing
 import androidx.compose.foundation.background
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -121,7 +123,6 @@ import `in`.melo.data.preferences.AlbumArtQuality
 import `in`.melo.data.preferences.CarouselStyle
 import `in`.melo.data.preferences.FullPlayerLoadingTweaks
 import `in`.melo.presentation.components.AlbumCarouselSection
-import `in`.melo.presentation.components.AutoScrollingTextOnDemand
 import `in`.melo.presentation.components.LocalMaterialTheme
 import `in`.melo.presentation.components.scoped.rememberSmoothProgress
 import `in`.melo.presentation.viewmodel.PlayerSheetState
@@ -506,7 +507,6 @@ fun FullPlayerContent(
             onLyricsClick = onLyricsClick,
             playerOnBaseColor = playerOnBaseColor,
             playerViewModel = playerViewModel,
-            gradientEdgeColor = if (appSettings.playerArtworkGradient) Color.Transparent else LocalMaterialTheme.current.primaryContainer,
             chipColor = playerOnAccentColor.copy(alpha = 0.8f),
             chipContentColor = playerAccentColor,
             onQueueClick = onSongMetadataQueueClick,
@@ -529,7 +529,6 @@ fun FullPlayerContent(
             onLyricsClick = onLyricsClick,
             playerOnBaseColor = playerOnBaseColor,
             playerViewModel = playerViewModel,
-            gradientEdgeColor = if (appSettings.playerArtworkGradient) Color.Transparent else LocalMaterialTheme.current.primaryContainer,
             chipColor = playerOnAccentColor.copy(alpha = 0.8f),
             chipContentColor = playerAccentColor,
             onQueueClick = onSongMetadataQueueClick,
@@ -1108,7 +1107,6 @@ private fun FullPlayerSongMetadataSection(
     onLyricsClick: () -> Unit,
     playerOnBaseColor: Color,
     playerViewModel: PlayerViewModel,
-    gradientEdgeColor: Color,
     chipColor: Color,
     chipContentColor: Color,
     onQueueClick: () -> Unit,
@@ -1151,7 +1149,6 @@ private fun FullPlayerSongMetadataSection(
             textColor = playerOnBaseColor,
             artistTextColor = playerOnBaseColor.copy(alpha = 0.7f),
             playerViewModel = playerViewModel,
-            gradientEdgeColor = gradientEdgeColor,
             chipColor = chipColor,
             chipContentColor = chipContentColor,
             onClickLyrics = onLyricsClick,
@@ -1249,7 +1246,6 @@ private fun SongMetadataDisplaySection(
     expansionFractionProvider: () -> Float,
     textColor: Color,
     artistTextColor: Color,
-    gradientEdgeColor: Color,
     playerViewModel: PlayerViewModel,
     chipColor: Color,
     chipContentColor: Color,
@@ -1276,7 +1272,6 @@ private fun SongMetadataDisplaySection(
                 expansionFractionProvider = expansionFractionProvider,
                 textColor = textColor,
                 artistTextColor = artistTextColor,
-                gradientEdgeColor = gradientEdgeColor,
                 playerViewModel = playerViewModel,
                 onClickTitle = { playerViewModel.openAlbumOf(currentSong) },
                 onClickArtist = onClickArtist,
@@ -1821,7 +1816,6 @@ private fun PlayerSongInfo(
     expansionFractionProvider: () -> Float,
     textColor: Color,
     artistTextColor: Color,
-    gradientEdgeColor: Color,
     playerViewModel: PlayerViewModel,
     onClickTitle: () -> Unit,
     onClickArtist: () -> Unit,
@@ -1830,6 +1824,13 @@ private fun PlayerSongInfo(
 ) {
     val coroutineScope = rememberCoroutineScope()
     var isNavigatingToArtist by remember { mutableStateOf(false) }
+    val visibleTitle = title.ifBlank { stringResource(R.string.common_unknown_track) }
+    val visibleArtist = artist.takeIf(String::isNotBlank)
+        ?: artists.asSequence().map(Artist::name).firstOrNull(String::isNotBlank)
+        ?: stringResource(R.string.common_unknown_artist)
+    val canMarquee by remember {
+        derivedStateOf { isPlayingProvider() && expansionFractionProvider() > 0.99f }
+    }
     val resolvedArtistId by remember(artists, artistId) {
         derivedStateOf { artists.firstOrNull { it.id != 0L && it.id != -1L }?.id ?: artistId }
     }
@@ -1855,37 +1856,42 @@ private fun PlayerSongInfo(
                 translationY = (1f - fraction) * 24f
             }
     ) {
-        // We pass 1f to AutoScrollingTextOnDemand because the alpha/translation is now handled by the parent Column graphicsLayer
-        // and we want it "fully rendered" but hidden/moved by the layer.
-        // Actually, AutoScrollingTextOnDemand uses expansionFraction to start scrolling only when fully expanded?
-        // Let's check AutoScrollingTextOnDemand. Assuming it uses it for scrolling trigger.
-        // If we want to avoid recomposition, we might need to pass the provider or just 1f if scrolling logic handles itself.
-        // For now, let's pass the current value from provider for logic correctness, but ideally this component should be optimized too.
-        AutoScrollingTextOnDemand(
-            text = title,
+        Text(
+            text = visibleTitle,
             style = titleStyle,
-            gradientEdgeColor = gradientEdgeColor,
-            expansionFractionProvider = expansionFractionProvider,
+            maxLines = 1,
+            softWrap = false,
+            overflow = if (canMarquee) TextOverflow.Clip else TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (canMarquee) Modifier.basicMarquee(
+                    iterations = Int.MAX_VALUE,
+                    spacing = MarqueeSpacing(24.dp),
+                    velocity = 25.dp,
+                    initialDelayMillis = 2_000
+                ) else Modifier)
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onClickTitle
-                ),
-            canScroll = isPlayingProvider()
+                )
         )
         Spacer(modifier = Modifier.height(2.dp))
 
-
-
-        AutoScrollingTextOnDemand(
-            text = artist,
+        Text(
+            text = visibleArtist,
             style = artistStyle,
-            gradientEdgeColor = gradientEdgeColor,
-            expansionFractionProvider = expansionFractionProvider,
+            maxLines = 1,
+            softWrap = false,
+            overflow = if (canMarquee) TextOverflow.Clip else TextOverflow.Ellipsis,
             modifier = Modifier
                 .fillMaxWidth()
+                .then(if (canMarquee) Modifier.basicMarquee(
+                    iterations = Int.MAX_VALUE,
+                    spacing = MarqueeSpacing(24.dp),
+                    velocity = 25.dp,
+                    initialDelayMillis = 2_000
+                ) else Modifier)
                 .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -1900,20 +1906,18 @@ private fun PlayerSongInfo(
                             }
                         }
                     },
-
-                onLongClick = {
-                    if (isNavigatingToArtist) return@combinedClickable
-                    coroutineScope.launch {
-                        isNavigatingToArtist = true
-                        try {
-                            playerViewModel.triggerArtistNavigationFromPlayer(resolvedArtistId)
-                        } finally {
-                            isNavigatingToArtist = false
+                    onLongClick = {
+                        if (isNavigatingToArtist) return@combinedClickable
+                        coroutineScope.launch {
+                            isNavigatingToArtist = true
+                            try {
+                                playerViewModel.triggerArtistNavigationFromPlayer(resolvedArtistId)
+                            } finally {
+                                isNavigatingToArtist = false
+                            }
                         }
                     }
-                }
-            ),
-            canScroll = isPlayingProvider()
+                )
         )
     }
 }

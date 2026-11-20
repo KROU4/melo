@@ -253,7 +253,8 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
     SettingsScaffold(stringResource(R.string.settings_category_appearance_title), navController) {
         SettingsSection(title = stringResource(R.string.settings_global_theme_section), icon = {}) {
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_app_language_title), description = "",
+                label = stringResource(R.string.settings_app_language_title),
+                description = stringResource(R.string.settings_app_language_subtitle),
                 options = mapOf(
                     AppSettings.LANGUAGE_SYSTEM to stringResource(R.string.settings_language_system),
                     "fr" to "Français", "en" to "English", "ru" to "Русский",
@@ -263,7 +264,8 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 leadingIcon = { Icon(Icons.Outlined.Language, null, tint = MaterialTheme.colorScheme.secondary) },
             )
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_app_theme_title), description = "",
+                label = stringResource(R.string.settings_app_theme_title),
+                description = stringResource(R.string.settings_app_theme_subtitle),
                 options = mapOf(
                     AppSettings.THEME_SYSTEM to stringResource(R.string.settings_language_system),
                     AppSettings.THEME_LIGHT to stringResource(R.string.settings_theme_light),
@@ -274,9 +276,9 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 leadingIcon = { Icon(Icons.Outlined.LightMode, null, tint = MaterialTheme.colorScheme.secondary) },
             )
             SwitchSettingItem(stringResource(R.string.settings_surface_gradients_title), stringResource(R.string.settings_surface_gradients_subtitle), s.surfaceGradients, { v -> update { it.copy(surfaceGradients = v) } }, leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) })
-            SwitchSettingItem(stringResource(R.string.home_gradients_setting), "", s.homeGradients, { v -> update { it.copy(homeGradients = v) } }, leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) })
+            SwitchSettingItem(stringResource(R.string.home_gradients_setting), stringResource(R.string.home_gradients_setting_subtitle), s.homeGradients, { v -> update { it.copy(homeGradients = v) } }, leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) })
             SwitchSettingItem(stringResource(R.string.home_press_motion_setting), stringResource(R.string.settings_touch_motion_subtitle), s.homePressMotion, { v -> update { it.copy(homePressMotion = v) } }, leadingIcon = { Icon(Icons.Rounded.TouchApp, null, tint = MaterialTheme.colorScheme.secondary) })
-            SwitchSettingItem(stringResource(R.string.home_loading_animation_setting), "", s.homeLoadingAnimations, { v -> update { it.copy(homeLoadingAnimations = v) } }, leadingIcon = { Icon(Icons.Outlined.PlayCircle, null, tint = MaterialTheme.colorScheme.secondary) })
+            SwitchSettingItem(stringResource(R.string.home_loading_animation_setting), stringResource(R.string.home_loading_animation_subtitle), s.homeLoadingAnimations, { v -> update { it.copy(homeLoadingAnimations = v) } }, leadingIcon = { Icon(Icons.Outlined.PlayCircle, null, tint = MaterialTheme.colorScheme.secondary) })
             SwitchSettingItem(stringResource(R.string.settings_show_scrollbar_title), stringResource(R.string.settings_show_scrollbar_subtitle), s.showScrollbar, { v -> update { it.copy(showScrollbar = v) } }, leadingIcon = { Icon(Icons.Rounded.UnfoldMore, null, tint = MaterialTheme.colorScheme.secondary) })
         }
         CategoryRow(stringResource(R.string.melo_advanced), stringResource(R.string.melo_advanced_description), Icons.Rounded.Tune) {
@@ -295,7 +297,8 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) },
             )
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_player_theme_title), description = "",
+                label = stringResource(R.string.settings_player_theme_title),
+                description = stringResource(R.string.settings_player_theme_subtitle),
                 options = mapOf(
                     ThemePreference.ALBUM_ART to stringResource(R.string.settings_player_theme_album),
                     ThemePreference.GLOBAL to stringResource(R.string.settings_player_theme_app),
@@ -305,14 +308,16 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 leadingIcon = { Icon(Icons.Outlined.PlayCircle, null, tint = MaterialTheme.colorScheme.secondary) },
             )
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_album_art_palette_title), description = "",
+                label = stringResource(R.string.settings_album_art_palette_title),
+                description = stringResource(R.string.settings_album_art_palette_subtitle),
                 options = AlbumArtPaletteStyle.entries.associate { it.storageKey to stringResource(it.labelRes) },
                 selectedKey = s.palette,
                 onSelectionChanged = { key -> update { it.copy(palette = key) } },
                 leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) },
             )
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_carousel_style_title), description = "",
+                label = stringResource(R.string.settings_carousel_style_title),
+                description = stringResource(R.string.settings_carousel_style_subtitle),
                 options = mapOf(
                     CarouselStyle.NO_PEEK to stringResource(R.string.settings_carousel_none),
                     CarouselStyle.ONE_PEEK to stringResource(R.string.settings_carousel_one),
@@ -328,7 +333,8 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
         }
         SettingsSection(title = stringResource(R.string.settings_home_collage_section), icon = {}) {
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_collage_pattern_title), description = "",
+                label = stringResource(R.string.settings_collage_pattern_title),
+                description = stringResource(R.string.settings_collage_pattern_subtitle),
                 options = CollagePattern.entries.associate { it.storageKey to stringResource(it.labelRes) },
                 selectedKey = s.collagePattern,
                 onSelectionChanged = { key -> update { it.copy(collagePattern = key) } },
@@ -338,7 +344,8 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
         }
         SettingsSection(title = stringResource(R.string.settings_navigation_bar_section), icon = {}) {
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_navbar_style_title), description = "",
+                label = stringResource(R.string.settings_navbar_style_title),
+                description = stringResource(R.string.settings_navbar_style_subtitle),
                 options = mapOf(
                     NavBarStyle.DEFAULT to stringResource(R.string.settings_navbar_floating),
                     NavBarStyle.FULL_WIDTH to stringResource(R.string.settings_navbar_full),
@@ -355,7 +362,8 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 valueText = { "${it.toInt()} dp" },
             )
             ThemeSelectorItem(
-                label = stringResource(R.string.settings_default_tab_title), description = "",
+                label = stringResource(R.string.settings_default_tab_title),
+                description = stringResource(R.string.settings_default_tab_subtitle),
                 options = mapOf(
                     AppSettings.TAB_HOME to stringResource(R.string.nav_bar_home),
                     AppSettings.TAB_EXPLORE to stringResource(R.string.nav_bar_explore),

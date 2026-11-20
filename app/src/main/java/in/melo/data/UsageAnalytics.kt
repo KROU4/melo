@@ -4,10 +4,13 @@ import android.content.Context
 import com.google.firebase.FirebaseApp
 import com.google.firebase.analytics.FirebaseAnalytics
 
-/** Controls Firebase Analytics collection without recording any Melo-specific content events. */
+/** Controls Firebase Analytics and Melo's aggregate public-stats telemetry with one privacy setting. */
 object UsageAnalytics {
     fun setEnabled(context: Context, enabled: Boolean) {
-        val app = FirebaseApp.getApps(context).firstOrNull { it.name == FirebaseApp.DEFAULT_APP_NAME } ?: return
-        FirebaseAnalytics.getInstance(context.applicationContext).setAnalyticsCollectionEnabled(enabled)
+        val application = context.applicationContext
+        if (FirebaseApp.getApps(application).any { it.name == FirebaseApp.DEFAULT_APP_NAME }) {
+            FirebaseAnalytics.getInstance(application).setAnalyticsCollectionEnabled(enabled)
+        }
+        MeloTelemetry.setEnabled(enabled)
     }
 }

@@ -37,7 +37,6 @@ data class AppSettings(
     val showQueueHistory: Boolean = true,
     val audioCacheLimitMb: Int = 4096,
     val preloadTracks: Int = 2,
-    val preloadEntireQueue: Boolean = false,
     val preloadOnMobile: Boolean = false,
     val cachePlayedTracks: Boolean = true,
     val preloadUpcomingTracks: Boolean = true,
@@ -72,8 +71,7 @@ data class AppSettings(
     /** Artwork rim style: plain, edge, or glass. */
     val homeDialTileStyle: String = DIAL_TILE_STYLE_GLASS,
     val homeDialNewReleaseTags: Boolean = true,
-    /** User order for Speed Dial and Artist Dial cards, stored as a JSON string array. */
-    val homeDialOrder: String = "",
+    /** User order for Artist Dial cards, stored as a JSON string array. */
     val homeArtistDialOrder: String = "",
     /** Album and playlist page buttons: order and which ones are in the bar, as [DetailActions] encodes them. */
     val albumActions: String = "",
@@ -93,8 +91,6 @@ data class AppSettings(
     val miniPlayerSwipe: String = MINI_SWIPE_TRACKS,
     /** The Spotify / YouTube / Device choice above search results. Hidden: every search reads all sources. */
     val showSearchSources: Boolean = false,
-    /** Country used for YouTube Music recommendations and podcast discovery. */
-    val youtubeContentCountry: String = YOUTUBE_COUNTRY_DEVICE,
     /** Firebase usage analytics is enabled by default and can be disabled in Privacy settings. */
     val analyticsEnabled: Boolean = true,
 ) {
@@ -114,7 +110,7 @@ data class AppSettings(
         .put("pauseOnVolumeZero", pauseOnVolumeZero).put("resumeOnHeadphones", resumeOnHeadphones)
         .put("persistentShuffle", persistentShuffle).put("showQueueHistory", showQueueHistory)
         .put("audioCacheLimitMb", audioCacheLimitMb).put("preloadTracks", preloadTracks)
-        .put("preloadEntireQueue", preloadEntireQueue).put("preloadOnMobile", preloadOnMobile)
+        .put("preloadOnMobile", preloadOnMobile)
         .put("cachePlayedTracks", cachePlayedTracks).put("preloadUpcomingTracks", preloadUpcomingTracks)
         .put("offlineMode", offlineMode)
         .put("tapBackgroundClosesPlayer", tapBackgroundClosesPlayer).put("hapticsEnabled", hapticsEnabled)
@@ -127,13 +123,13 @@ data class AppSettings(
         .put("surfaceGradients", surfaceGradients)
         .put("homeLoadingAnimations", homeLoadingAnimations)
         .put("homeDialTileStyle", homeDialTileStyle).put("homeDialNewReleaseTags", homeDialNewReleaseTags)
-        .put("homeDialOrder", homeDialOrder).put("homeArtistDialOrder", homeArtistDialOrder)
+        .put("homeArtistDialOrder", homeArtistDialOrder)
         .put("albumActions", albumActions).put("playlistActions", playlistActions)
         .put("swipeRight", swipeRight).put("swipeLeft", swipeLeft)
         .put("streamingQualityWifi", streamingQualityWifi).put("streamingQualityMobile", streamingQualityMobile)
         .put("downloadQuality", downloadQuality).put("audioNormalization", audioNormalization)
         .put("showPlayerMenuButton", showPlayerMenuButton).put("miniPlayerSwipe", miniPlayerSwipe)
-        .put("showSearchSources", showSearchSources).put("youtubeContentCountry", YOUTUBE_COUNTRY_DEVICE)
+        .put("showSearchSources", showSearchSources)
         .put("analyticsEnabled", analyticsEnabled)
 
     companion object {
@@ -150,7 +146,6 @@ data class AppSettings(
         const val MINI_SWIPE_DISMISS = "dismiss"
         const val MINI_SWIPE_OFF = "off"
         const val YOUTUBE_COUNTRY_IN = "IN"
-        const val YOUTUBE_COUNTRY_DEVICE = "device"
         const val DIAL_SOURCE_HISTORY = "history"
         const val DIAL_SOURCE_YOUTUBE = "youtube"
         const val DIAL_SOURCE_SPOTIFY = "spotify"
@@ -191,7 +186,6 @@ data class AppSettings(
                 showQueueHistory = json.optBoolean("showQueueHistory", d.showQueueHistory),
                 audioCacheLimitMb = json.optInt("audioCacheLimitMb", d.audioCacheLimitMb).coerceIn(512, 32768),
                 preloadTracks = savedPreloadTracks.coerceIn(1, 20),
-                preloadEntireQueue = false,
                 preloadOnMobile = json.optBoolean("preloadOnMobile", d.preloadOnMobile),
                 cachePlayedTracks = json.optBoolean("cachePlayedTracks", d.cachePlayedTracks),
                 preloadUpcomingTracks = json.optBoolean("preloadUpcomingTracks", savedPreloadTracks != 0),
@@ -219,7 +213,6 @@ data class AppSettings(
                     .takeIf { it in setOf(DIAL_TILE_STYLE_PLAIN, DIAL_TILE_STYLE_EDGE, DIAL_TILE_STYLE_GLASS) }
                     ?: d.homeDialTileStyle,
                 homeDialNewReleaseTags = json.optBoolean("homeDialNewReleaseTags", d.homeDialNewReleaseTags),
-                homeDialOrder = json.optString("homeDialOrder", d.homeDialOrder),
                 homeArtistDialOrder = json.optString("homeArtistDialOrder", d.homeArtistDialOrder),
                 albumActions = json.optString("albumActions", d.albumActions),
                 playlistActions = json.optString("playlistActions", d.playlistActions),
@@ -233,7 +226,6 @@ data class AppSettings(
                 miniPlayerSwipe = json.optString("miniPlayerSwipe", d.miniPlayerSwipe)
                     .takeIf { it in setOf(MINI_SWIPE_TRACKS, MINI_SWIPE_DISMISS, MINI_SWIPE_OFF) } ?: d.miniPlayerSwipe,
                 showSearchSources = json.optBoolean("showSearchSources", d.showSearchSources),
-                youtubeContentCountry = YOUTUBE_COUNTRY_DEVICE,
                 analyticsEnabled = json.optBoolean("analyticsEnabled", d.analyticsEnabled),
             )
         }

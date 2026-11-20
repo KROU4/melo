@@ -122,7 +122,6 @@ fun SearchScreen(
         val kind = filter.kind()
         discovery.results.filter { kind == null || it.kind == kind }
     }
-    val songs = remember(results, saved) { results.filter { it.kind == MusicKind.Track }.map { it.toSong(it.id in saved) } }
     val listState = rememberLazyListState()
     val open: (Music) -> Unit = {
         ui.rememberSearchResult(it)
@@ -130,7 +129,7 @@ fun SearchScreen(
     }
     val playFromHistory: (Music) -> Unit = { item ->
         ui.rememberSearchResult(item)
-        if (item.kind == MusicKind.Track) item.toSong(item.id in saved).let { song -> ui.playSongs(listOf(song), song, item.title) }
+        if (item.kind == MusicKind.Track) ui.playTrack(item)
         else navController.openMusic(ui, item)
     }
     var optionsFor by remember { mutableStateOf<Music?>(null) }
@@ -320,7 +319,7 @@ fun SearchScreen(
                                                 onLongPress = { selected = song },
                                                 onClick = {
                                                     ui.rememberSearchResult(item)
-                                                    ui.playSongs(songs, song, searchQuery)
+                                                    ui.playTrack(item)
                                                 },
                                                 showSourceBadge = true,
                                             )
@@ -368,7 +367,7 @@ fun SearchScreen(
                 )
         )
     }
-    SongOptionsHost(ui, navController, selected, songs, searchQuery) { selected = null }
+    SongOptionsHost(ui, navController, selected, emptyList(), searchQuery) { selected = null }
     MusicOptionsHost(ui, navController, optionsFor) { optionsFor = null }
 }
 
