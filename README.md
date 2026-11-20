@@ -44,6 +44,7 @@ The app ID is **in.melo**. Melo is independent of Spotify, YouTube, Google, and 
 ## Made for listening
 
 - **Your music together.** Browse Spotify, YouTube Music, SoundCloud, and audio stored on your device from one app.
+- **My Wave.** One tap turns the song you are playing into an endless stream of similar music that learns from your skips and likes.
 - **Artwork stays colourful.** Album covers, playlists, and artist photography keep their original colour against a restrained interface.
 - **A player that gets out of the way.** Queue, lyrics, playback controls, and song details are close at hand.
 - **A library that feels like yours.** Organize music, playlists, downloads, history, and local files.
