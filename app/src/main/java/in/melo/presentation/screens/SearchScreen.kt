@@ -38,6 +38,9 @@ import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SearchBarDefaults
 import androidx.compose.material3.Text
@@ -110,6 +113,11 @@ fun SearchScreen(
     var filter by rememberSaveable { mutableStateOf(SearchFilterType.ALL) }
     var selected by remember { mutableStateOf<Song?>(null) }
     val keyboard = LocalSoftwareKeyboardController.current
+    val fieldFocus = remember { FocusRequester() }
+    // Opened to type: the field takes the focus, unless results of an earlier search are shown.
+    LaunchedEffect(Unit) {
+        if (searchQuery.isBlank()) runCatching { fieldFocus.requestFocus(); keyboard?.show() }
+    }
     val statusBarTopInset = WindowInsets.systemBars.asPaddingValues().calculateTopPadding()
     val colorScheme = MaterialTheme.colorScheme
     val appSettings by ui.settings.collectAsStateWithLifecycle()
@@ -153,6 +161,23 @@ fun SearchScreen(
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                // Search opens from the Home header, over the tab it was opened from.
+                IconButton(
+                    modifier = Modifier.padding(bottom = MeloLayout.Space1).meloPanel(CircleShape),
+                    colors = IconButtonDefaults.iconButtonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = MaterialTheme.colorScheme.onSurface
+                    ),
+                    onClick = {
+                        keyboard?.hide()
+                        // A second tap during the exit animation would pop the screen below as well.
+                        if (navController.currentBackStackEntry?.lifecycle?.currentState == androidx.lifecycle.Lifecycle.State.RESUMED) {
+                            navController.popBackStack()
+                        }
+                    }
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = stringResource(R.string.common_back))
+                }
                 val inputColors = SearchBarDefaults.inputFieldColors(
                     focusedTextColor = MaterialTheme.colorScheme.onSurface,
                     unfocusedTextColor = MaterialTheme.colorScheme.onSurface.copy(alpha = MeloAlpha.Secondary),
@@ -173,6 +198,7 @@ fun SearchScreen(
                                     model.search(query, false)
                                     keyboard?.hide()
                                 },
+                                modifier = Modifier.focusRequester(fieldFocus),
                                 expanded = false,
                                 onExpandedChange = { onSearchBarActiveChange(false) },
                                 placeholder = {

@@ -331,7 +331,7 @@ fun LibraryScreen(model: MeloModel, navController: NavHostController, paddingVal
                                             stringResource(if (tab == LibraryTabId.PLAYLISTS) R.string.melo_empty_playlists_body else R.string.melo_empty_library_body),
                                             stringResource(if (tab == LibraryTabId.PLAYLISTS) R.string.melo_create_playlist else R.string.melo_discover),
                                             { if (tab == LibraryTabId.PLAYLISTS) creatingPlaylist = true
-                                              else navController.navigateToTopLevelSafely(Screen.Search.route) },
+                                              else navController.navigateSafely(Screen.Search.route) },
                                             Modifier.padding(horizontal = 24.dp, vertical = 16.dp)
                                         )
                                     } else when (tab) {

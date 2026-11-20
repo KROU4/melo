@@ -409,6 +409,7 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                     onHistoryClick = { navController.navigateSafely(Screen.History.route) },
                     profileImageUrl = youTubeAccount?.photoUrl,
                     onProfileClick = { navController.navigateSafely(Screen.SettingsCategory.createRoute("account")) },
+                    onSearchClick = { navController.navigateSafely(Screen.Search.route) },
                     isScrolled = isScrolled,
                     refreshing = showHomeSkeleton,
                     pullFraction = { pullState.distanceFraction },
@@ -659,7 +660,7 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                                 stringResource(R.string.melo_empty_home_title),
                                 stringResource(R.string.melo_empty_home_body),
                                 stringResource(R.string.melo_discover),
-                                { navController.navigateToTopLevelSafely(Screen.Search.route) },
+                                { navController.navigateSafely(Screen.Search.route) },
                                 Modifier.padding(horizontal = MeloLayout.PageGutter)
                             )
                         }

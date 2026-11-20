@@ -359,7 +359,7 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 options = mapOf(
                     AppSettings.TAB_HOME to stringResource(R.string.nav_bar_home),
                     AppSettings.TAB_EXPLORE to stringResource(R.string.nav_bar_explore),
-                    AppSettings.TAB_SEARCH to stringResource(R.string.nav_bar_search),
+                    AppSettings.TAB_MY_WAVE to stringResource(R.string.nav_bar_my_wave),
                     AppSettings.TAB_LIBRARY to stringResource(R.string.nav_bar_library),
                     AppSettings.TAB_PODCASTS to stringResource(R.string.nav_bar_podcasts),
                 ),
