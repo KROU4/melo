@@ -117,7 +117,11 @@ class MeloPlaybackService : MediaSessionService() {
                     else ExoPlayer.PreloadConfiguration.DEFAULT
                 }
         }
-        val intent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
+        // The launcher's own intent: a tap on the notification brings the open app back instead of
+        // stacking a second copy of it, with its own model and its own My Wave, on top.
+        val launch = Intent(this, MainActivity::class.java).setAction(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+        val intent = PendingIntent.getActivity(this, 0, launch,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         mediaSession = MediaSession.Builder(this, player).setSessionActivity(intent)
             .setCallback(object : MediaSession.Callback {
