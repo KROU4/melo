@@ -351,6 +351,12 @@ class PlayerViewModel(val model: MeloModel, private val scope: CoroutineScope) {
         model.play(songsToPlay.map(Song::toMusic), index)
     }
 
+    /** One track chosen on its own, from search, history or a link: it plays now and its radio follows. */
+    fun playTrack(item: Music) {
+        mutableQueueName.value = item.title
+        model.playWithRadio(item)
+    }
+
     fun playSongsShuffled(songsToPlay: List<Song>, queueName: String = "") {
         if (songsToPlay.isEmpty()) return
         if (!model.player.state.value.shuffle) model.player.shuffle()
@@ -432,10 +438,12 @@ class PlayerViewModel(val model: MeloModel, private val scope: CoroutineScope) {
 
     // Queue -------------------------------------------------------------------------------------
     fun addSongToQueue(song: Song) {
+        `in`.melo.data.MeloTelemetry.recordFeature("queue")
         model.player.addToQueue(listOf(song.toMusic()))
         sendToast(context.getString(R.string.queue_added))
     }
     fun addSongNextToQueue(song: Song) {
+        `in`.melo.data.MeloTelemetry.recordFeature("queue")
         model.player.playNext(listOf(song.toMusic()))
         sendToast(context.getString(R.string.queue_next))
     }
@@ -565,6 +573,7 @@ class PlayerViewModel(val model: MeloModel, private val scope: CoroutineScope) {
     /** Keeps the Spotify tracks of [item] on this device, stored as delivered: encrypted. */
     fun downloadItem(item: Music) {
         if (item.id in downloadJobs) return
+        `in`.melo.data.MeloTelemetry.recordFeature("downloads")
         val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
             try {
                 val all = model.tracksOf(item).filterNot(Music::isLocalTrack)
@@ -644,6 +653,7 @@ class PlayerViewModel(val model: MeloModel, private val scope: CoroutineScope) {
     /** Loads the current track's lyrics: saved ones, then Spotify, then LRCLIB if the setting allows. */
     fun loadLyricsForCurrentSong() {
         val song = stablePlayerState.value.currentSong ?: return
+        `in`.melo.data.MeloTelemetry.recordFeature("lyrics")
         val known = mutableLyrics.value
         if (known.songId == song.id && (known.loading || known.lyrics != null)) return
         val offset = uiPrefs.getInt(KEY_LYRICS_OFFSET + song.id, 0)
@@ -659,6 +669,7 @@ class PlayerViewModel(val model: MeloModel, private val scope: CoroutineScope) {
     /** Called by the "fetch" dialog: the source chain, then its picker when asked for. */
     fun fetchLyricsForCurrentSong(forcePick: Boolean) {
         val song = stablePlayerState.value.currentSong ?: return
+        `in`.melo.data.MeloTelemetry.recordFeature("lyrics")
         lyricsJob?.cancel()
         mutableLyricsSearch.value = LyricsSearchUiState.Loading
         lyricsJob = scope.launch {

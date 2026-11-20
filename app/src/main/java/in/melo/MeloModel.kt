@@ -1842,12 +1842,12 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
         ))
     }
 
-    fun playHomeRecommendation(pick: HomeRecommendationPick) {
+    fun playHomeRecommendation(pick: HomeRecommendationPick): Job? {
         if (!online.value) {
             mutableMessage.value = app.getString(`in`.melo.R.string.home_mood_offline)
-            return
+            return null
         }
-        viewModelScope.launch {
+        return viewModelScope.launch {
             try {
                 withContext(Dispatchers.IO) { listeningHistory.load() }
                 val localHistory = listeningHistory.entries.value.map { it.track }
@@ -1864,7 +1864,49 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
         }
     }
 
+    private var upNextJob: Job? = null
+
+    /**
+     * A track chosen on its own plays at once and its radio follows it, as in YouTube Music and Spotify,
+     * instead of leaving a queue of one. The song never waits for the network: a radio that cannot be
+     * loaded is not worth a message, the track simply plays alone.
+     */
+    fun playWithRadio(track: Music) {
+        `in`.melo.data.MeloTelemetry.recordFeature("radio")
+        play(listOf(track), 0)
+        if (track.isLocalTrack || !online.value) return
+        upNextJob = viewModelScope.launch {
+            try {
+                player.extendContext(track.id, upNext(track))
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) { }
+        }
+    }
+
+    /** The tracks that follow [seed] when nothing else was chosen: its radio, without the seed itself. */
+    private suspend fun upNext(seed: Music): List<Music> {
+        if (seed.source == `in`.melo.data.MusicSource.SoundCloud) {
+            // A SoundCloud track is followed by its SoundCloud station, never by Spotify's radio.
+            return withContext(Dispatchers.IO) { SoundCloud.station(seed) }.filterNot { it.id == seed.id }
+        }
+        if (seed.source == `in`.melo.data.MusicSource.YouTubeMusic ||
+            (seed.source == `in`.melo.data.MusicSource.Spotify && catalog == null)) {
+            val videoId = seed.youTubeVideoId ?: withContext(Dispatchers.IO) {
+                `in`.melo.data.youtube.TrackMatcher.resolve(`in`.melo.data.youtube.MatchQuery(
+                    key = seed.id, title = seed.title, artists = seed.subtitle,
+                    durationMs = seed.durationMs, album = seed.album,
+                ))
+            } ?: return emptyList()
+            return withContext(Dispatchers.IO) {
+                YouTubeMusic.watchQueue("RDAMVM$videoId", videoId, limit = 50)
+            }.filterNot { it.id == seed.id || it.youTubeVideoId == videoId }
+        }
+        return radio?.station(seed)?.tracks.orEmpty().filterNot { it.id == seed.id }
+    }
+
     fun loadRadio(seed: Music, open: (Music) -> Unit) {
+        `in`.melo.data.MeloTelemetry.recordFeature("radio")
         if (seed.source == `in`.melo.data.MusicSource.SoundCloud) { loadSoundCloudStation(seed); return }
         if (seed.source == `in`.melo.data.MusicSource.YouTubeMusic ||
             (seed.source == `in`.melo.data.MusicSource.Spotify && catalog == null)) {
@@ -1917,6 +1959,9 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
     private val wave by waveLazy
     val myWave: StateFlow<WaveUi> get() = wave.state
     fun startMyWave() {
+        // A radio still loading behind a track played on its own must not land in the wave.
+        upNextJob?.cancel()
+        upNextJob = null
         WaveKeeper.stopAll(except = wave)
         wave.start()
     }
@@ -2135,6 +2180,8 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
     }
     /** Without a Spotify account, Spotify tracks play through their YouTube Music match. */
     fun play(queue: List<Music>, index: Int = 0) {
+        upNextJob?.cancel()
+        upNextJob = null
         val tracks = withLocalFiles(queue)
         val selected = tracks.getOrNull(index) ?: return
         if (selected.isLocalTrack && selected.mediaUri == null) {
@@ -2176,6 +2223,7 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
                 nextPage = null, youTubeNext = null, soundCloudNext = null, error = null, loading = trimmed.length >= 2)
         }
         if (trimmed.length < 2) return
+        `in`.melo.data.MeloTelemetry.recordFeature("search")
         if (!online.value || discovery.value.activeSource == SearchSource.Local) { showLocalResults(trimmed, null); return }
         loadResults(trimmed, debounce)
     }

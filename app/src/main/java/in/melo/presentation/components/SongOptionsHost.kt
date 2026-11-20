@@ -32,7 +32,10 @@ fun SongOptionsHost(
         playerViewModel = ui,
         onToggleFavorite = { ui.toggleFavoriteSpecificSong(song) },
         onDismiss = onDismiss,
-        onPlaySong = { ui.playSongs(context.ifEmpty { listOf(song) }, song, queueName) },
+        onPlaySong = {
+            val queue = context.ifEmpty { listOf(song) }
+            if (queue.size <= 1) ui.playTrack(song.toMusic()) else ui.playSongs(queue, song, queueName)
+        },
         onAddToQueue = { ui.addSongToQueue(song) },
         onAddNextToQueue = { ui.addSongNextToQueue(song) },
         onNavigateToAlbum = { onDismiss(); ui.openAlbumOf(song) },

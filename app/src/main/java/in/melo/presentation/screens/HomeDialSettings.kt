@@ -77,10 +77,9 @@ internal fun HomeDialSettingsMenuContent(
     onSettingsChange: ((AppSettings.() -> AppSettings) -> Unit),
 ) {
     Column(
-        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
-        verticalArrangement = Arrangement.spacedBy(MeloLayout.Space3),
+        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(MeloLayout.Space2),
     ) {
-        Text(stringResource(R.string.home_dial_settings_title), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         DialSwitchRow(stringResource(R.string.home_dial_speed_dial), settings.homeSpeedDialEnabled) {
             onSettingsChange { copy(homeSpeedDialEnabled = it) }
         }
@@ -107,7 +106,15 @@ internal fun HomeDialSettingsMenuContent(
                         onClick = { onSettingsChange { copy(homeDialSource = source) } },
                         shape = SegmentedButtonDefaults.itemShape(index, 3),
                         modifier = Modifier.weight(1f),
-                    ) { Text(stringResource(label), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        icon = {},
+                    ) {
+                        Text(
+                            stringResource(label),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
             Text(stringResource(R.string.home_dial_rows), style = MaterialTheme.typography.titleSmall)
@@ -118,7 +125,14 @@ internal fun HomeDialSettingsMenuContent(
                         onClick = { onSettingsChange { copy(homeDialRows = rows) } },
                         shape = SegmentedButtonDefaults.itemShape(index, 2),
                         modifier = Modifier.weight(1f),
-                    ) { Text(stringResource(R.string.home_dial_grid_value, rows), maxLines = 1) }
+                        icon = {},
+                    ) {
+                        Text(
+                            stringResource(R.string.home_dial_grid_value, rows),
+                            style = MaterialTheme.typography.labelLarge,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
             DialSwitchRow(stringResource(R.string.home_dial_labels), settings.homeDialLabels) {
@@ -142,7 +156,15 @@ internal fun HomeDialSettingsMenuContent(
                         onClick = { onSettingsChange { copy(homeDialTileStyle = style) } },
                         shape = SegmentedButtonDefaults.itemShape(index, 3),
                         modifier = Modifier.weight(1f),
-                    ) { Text(stringResource(label), maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                        icon = {},
+                    ) {
+                        Text(
+                            stringResource(label),
+                            style = MaterialTheme.typography.labelMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }

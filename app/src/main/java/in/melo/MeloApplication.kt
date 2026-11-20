@@ -12,7 +12,9 @@ import java.io.File
 class MeloApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
-        UsageAnalytics.setEnabled(this, SettingsStore.get(this).settings.value.analyticsEnabled)
+        val analyticsEnabled = SettingsStore.get(this).settings.value.analyticsEnabled
+        `in`.melo.data.MeloTelemetry.initialize(this, analyticsEnabled)
+        UsageAnalytics.setEnabled(this, analyticsEnabled)
         `in`.melo.data.diagnostics.DiagnosticLog.init(this)
         `in`.melo.data.diagnostics.DiagnosticLog.catchCrashes()
         `in`.melo.data.diagnostics.DiagnosticLog.recordPastExits(this)

@@ -11,6 +11,11 @@
   <a href="https://github.com/aarush-io/melo/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/aarush-io/melo?style=for-the-badge&label=LATEST&color=f1f0ec&labelColor=171717" /></a>
   <img alt="Android 8+" src="https://img.shields.io/badge/ANDROID-8.0%2B-f1f0ec?style=for-the-badge&labelColor=171717" />
   <a href="https://github.com/aarush-io/melo/releases"><img alt="Total GitHub release downloads" src="https://img.shields.io/github/downloads/aarush-io/melo/total?style=for-the-badge&label=DOWNLOADS&color=f1f0ec&labelColor=171717" /></a>
+  <a href="https://github.com/aarush-io/melo/stargazers"><img alt="GitHub stars" src="https://img.shields.io/github/stars/aarush-io/melo?style=for-the-badge&label=STARS&color=f1f0ec&labelColor=171717" /></a>
+</p>
+
+<p align="center">
+  <a href="https://api.melo.aarushsagar.com/api/stats"><img alt="Active playback sessions" src="https://api.melo.aarushsagar.com/api/stats/live/badge.svg" /></a>
   <a href="LICENSE"><img alt="GPL v3" src="https://img.shields.io/badge/LICENSE-GPL_3.0-f1f0ec?style=for-the-badge&labelColor=171717" /></a>
 </p>
 
@@ -55,7 +60,7 @@ Service access and available playback features depend on the source, account, re
 
 ## Get Melo
 
-Download **Melo 1.1.0** from the [latest GitHub release](https://github.com/aarush-io/melo/releases/latest), then open the APK on an ARM64 Android device running Android 8.0 or later. Android will ask you to allow installation from the app you used to open the download.
+Download **Melo 1.2.0** from the [latest GitHub release](https://github.com/aarush-io/melo/releases/latest), then open the APK on an ARM64 Android device running Android 8.0 or later. Android will ask you to allow installation from the app you used to open the download.
 
 Melo uses its own application ID and keeps its settings, sign-in, and downloads separate from other apps.
 
@@ -67,7 +72,7 @@ For an update to install over an existing Melo build, publish a higher version c
 
     Melo-vVERSION.apk
 
-For example, version 1.1.0 uses the tag v1.1.0 and the asset Melo-v1.1.0.apk.
+For example, version 1.2.0 uses the tag v1.2.0 and the asset Melo-v1.2.0.apk.
 
 ## Build from source
 

@@ -9,6 +9,25 @@
 - Bring the open app back from the playback notification instead of opening a second copy of it.
 - Move Search from the bottom bar to the first button of the Home header. A start tab saved as Search now opens Home.
 
+## Melo 1.2.0
+
+### Home
+
+- Speed Dials refresh more smoothly, with improved Lucky and History tiles.
+- The Mixes dial can show Spotify playlists when your account is connected.
+
+### Playback
+
+- Play a song on its own and radio recommendations will follow.
+
+### Player
+
+- Track titles and artist names stay visible more reliably.
+
+### Settings
+
+- Account options and settings are easier to find.
+
 ## Melo 1.0.0 — Public launch
 
 - Release Melo as a standalone Android app with the in.melo application ID.

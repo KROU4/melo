@@ -32,6 +32,19 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
@@ -46,12 +59,15 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
@@ -61,10 +77,12 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import `in`.melo.R
@@ -76,11 +94,14 @@ import `in`.melo.presentation.components.MeloIconButton
 import `in`.melo.presentation.components.artworkRim
 import `in`.melo.presentation.components.homePress
 import `in`.melo.presentation.components.LocalHomeGradients
-import `in`.melo.presentation.components.MoodArtwork
+import `in`.melo.presentation.components.moodColors
 import `in`.melo.data.HomeMood
 import `in`.melo.ui.theme.MeloLayout
 import `in`.melo.ui.theme.LocalMeloDarkTheme
 import `in`.melo.ui.theme.MeloAlpha
+import `in`.melo.presentation.utils.LocalReducedMotion
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 internal data class HomeSpeedDialEntry(
@@ -96,8 +117,19 @@ private const val SLOT_BLANK = -1
 private const val SLOT_LUCKY = -2
 private const val SLOT_HISTORY = -3
 internal const val SPEED_DIAL_MAX_ITEMS = 54
+internal const val SPEED_DIAL_MAX_PAGES = 3
 private val SPEED_DIAL_GAP = 8.dp
 private val SPEED_DIAL_SHAPE = MeloLayout.CardShape
+internal val HOME_DIAL_PAGER_HEADER_HEIGHT = 76.dp
+internal val HOME_DIAL_PAGER_GRID_RESERVE = 148.dp
+
+private enum class SpeedDialAction { LUCKY, HISTORY }
+
+private data class SpeedDialTileVisual(
+    val title: String,
+    val artworkUrl: String?,
+    val isNewRelease: Boolean,
+)
 
 @Composable
 private fun artworkForeground(): Color = if (LocalMeloDarkTheme.current) {
@@ -106,27 +138,57 @@ private fun artworkForeground(): Color = if (LocalMeloDarkTheme.current) {
     MaterialTheme.colorScheme.onPrimary
 }
 
-private fun speedDialSlots(count: Int, pinned: Int, lucky: Boolean, history: Boolean, rows: Int): IntArray {
+private fun speedDialSlots(
+    count: Int,
+    lucky: Boolean,
+    history: Boolean,
+    rows: Int,
+    maxPages: Int?,
+): IntArray {
     val pageSize = SPEED_DIAL_COLUMNS * rows
-    val extras = (if (lucky) 1 else 0) + (if (history) 1 else 0)
-    val needed = count + extras
+    val actionCount = (if (lucky) 1 else 0) + (if (history) 1 else 0)
+    val itemCount = maxPages?.let { count.coerceAtMost((pageSize * it - actionCount).coerceAtLeast(0)) } ?: count
+    val needed = itemCount + actionCount
     if (needed == 0) return IntArray(0)
-    val pages = ((needed + pageSize - 1) / pageSize).coerceAtLeast(1)
-    val slots = IntArray(pages * pageSize) { SLOT_BLANK }
+    val pageCount = (needed + pageSize - 1) / pageSize
+    val slots = IntArray(pageCount * pageSize) { SLOT_BLANK }
 
-    // Keep Lucky and History together on the final page. If a packed page leaves
-    // too little room, move only the unpinned tail entries forward to make space.
-    val lastPageFill = if (count > 0 && count % pageSize == 0) pageSize else count % pageSize
-    val overflow = (lastPageFill + extras - pageSize).coerceAtLeast(0)
-    val moveToLastPage = minOf(overflow, (count - pinned.coerceIn(0, count)).coerceAtLeast(0))
-    val leadingCount = count - moveToLastPage
-    var next = 0
-    for (index in 0 until leadingCount) slots[index] = next++
-    val lastPageStart = (pages - 1) * pageSize
-    repeat(moveToLastPage) { offset -> slots[lastPageStart + offset] = next++ }
-    var actionSlot = if (moveToLastPage > 0) lastPageStart + moveToLastPage else maxOf(count, lastPageStart)
-    if (lucky) slots[actionSlot++] = SLOT_LUCKY
-    if (history) slots[actionSlot] = SLOT_HISTORY
+    // Lucky always owns the home page's bottom-right tile.
+    if (lucky) slots[pageSize - 1] = SLOT_LUCKY
+
+    // History owns the final page's bottom-right tile. On a one-page dial,
+    // place it immediately before Lucky so both actions remain available.
+    if (history) {
+        val historySlot = if (pageCount == 1 && lucky) pageSize - 2 else slots.lastIndex
+        slots[historySlot] = SLOT_HISTORY
+    }
+
+    // Balance pages when History is pinned to the final page, avoiding a
+    // nearly empty last page while retaining the item order.
+    var nextEntry = 0
+    for (page in 0 until pageCount) {
+        val pagesRemaining = pageCount - page
+        val remainingEntries = itemCount - nextEntry
+        val reservedOnPage =
+            (if (lucky && page == 0) 1 else 0) +
+                (if (history && page == pageCount - 1) 1 else 0)
+        val pageCapacity = pageSize - reservedOnPage
+        val desiredEntriesOnPage = if (history && pageCount > 1) {
+            (remainingEntries + pagesRemaining - 1) / pagesRemaining
+        } else {
+            remainingEntries
+        }
+        val entriesOnPage = minOf(pageCapacity, desiredEntriesOnPage)
+        var pageSlot = page * pageSize
+        var placed = 0
+        while (placed < entriesOnPage) {
+            if (slots[pageSlot] == SLOT_BLANK) {
+                slots[pageSlot] = nextEntry++
+                placed++
+            }
+            pageSlot++
+        }
+    }
     return slots
 }
 
@@ -141,11 +203,13 @@ internal fun HomeSpeedDial(
     onItemClick: (HomeSpeedDialEntry) -> Unit,
     onItemLongPress: (HomeSpeedDialEntry) -> Unit,
     hasLuckyTile: Boolean,
-    onLuckyClick: () -> Unit,
+    onLuckyClick: () -> Job?,
     onHistoryClick: () -> Unit,
     onReorderPins: (() -> Unit)?,
     onCustomize: (() -> Unit)? = null,
     title: String? = null,
+    sharedPagerHeader: Boolean = false,
+    maxPages: Int? = null,
     rows: Int = 4,
     /** The first Speed Dial / Artist Dial page fills the visible Home viewport. */
     pageHeight: Dp? = null,
@@ -163,12 +227,15 @@ internal fun HomeSpeedDial(
     modifier: Modifier = Modifier,
 ) {
     if (!loading && entries.isEmpty() && categoryChips.isEmpty() && title == null && !hasLuckyTile && !showHistoryTile) return
-    val pinnedCount = entries.takeWhile { it.item.id in pinnedIds }.size
     val safeRows = rows.coerceIn(3, 4)
     val pageSize = SPEED_DIAL_COLUMNS * safeRows
+    val reservedActionCount = (if (hasLuckyTile) 1 else 0) + (if (showHistoryTile) 1 else 0)
+    val visibleEntries = maxPages?.let {
+        entries.take((pageSize * it - reservedActionCount).coerceAtLeast(0))
+    } ?: entries
     val slots = if (loading) IntArray(pageSize) { it }
-        else if (entries.isEmpty() && !hasLuckyTile && !showHistoryTile) IntArray(0)
-        else speedDialSlots(entries.size, pinnedCount, hasLuckyTile, history = showHistoryTile, rows = safeRows)
+        else if (visibleEntries.isEmpty() && !hasLuckyTile && !showHistoryTile) IntArray(0)
+        else speedDialSlots(visibleEntries.size, hasLuckyTile, history = showHistoryTile, rows = safeRows, maxPages = maxPages)
     val pageCount = slots.size / pageSize
     val pagerState = rememberPagerState(pageCount = { pageCount })
 
@@ -176,36 +243,40 @@ internal fun HomeSpeedDial(
         if (pageHeight != null) Modifier.height(pageHeight) else Modifier.padding(bottom = 24.dp),
     )
     Column(columnModifier.padding(bottom = footerReserve), verticalArrangement = Arrangement.spacedBy(MeloLayout.Space3)) {
-        if (title != null || onReorderPins != null || onCustomize != null) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = MeloLayout.PageGutter),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                if (title != null) {
-                    Text(
-                        text = title,
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
+        if (sharedPagerHeader) {
+            Box(Modifier.fillMaxWidth().height(HOME_DIAL_PAGER_HEADER_HEIGHT)) {
+                if (title != null || onReorderPins != null || onCustomize != null) {
+                    HomeSpeedDialHeading(
+                        title = title,
+                        onReorderPins = onReorderPins,
+                        onCustomize = onCustomize,
+                        modifier = Modifier.align(Alignment.BottomCenter),
                     )
-                } else {
-                    Spacer(Modifier.weight(1f))
                 }
-                if (onReorderPins != null) {
-                    MeloIconButton(Icons.Rounded.SwapVert, stringResource(R.string.pins_reorder), onReorderPins)
-                }
-                if (onCustomize != null) {
-                    MeloIconButton(Icons.Rounded.Tune, stringResource(R.string.home_dial_customize), onCustomize)
+                if (categoryChips.isNotEmpty()) {
+                    HomeCategoryChips(
+                        chips = categoryChips,
+                        selected = selectedCategory,
+                        onClick = onCategoryClick,
+                        modifier = Modifier.align(Alignment.BottomCenter),
+                    )
                 }
             }
         } else {
-            // Dial leaves a little breathing room above the first row of art.
-            Spacer(Modifier.height(MeloLayout.Space4))
-        }
+            if (title != null || onReorderPins != null || onCustomize != null) {
+                HomeSpeedDialHeading(
+                    title = title,
+                    onReorderPins = onReorderPins,
+                    onCustomize = onCustomize,
+                )
+            } else {
+                // Dial leaves a little breathing room above the first row of art.
+                Spacer(Modifier.height(MeloLayout.Space4))
+            }
 
-        if (categoryChips.isNotEmpty()) {
-            HomeCategoryChips(categoryChips, selectedCategory, onCategoryClick)
+            if (categoryChips.isNotEmpty()) {
+                HomeCategoryChips(categoryChips, selectedCategory, onCategoryClick)
+            }
         }
 
         if (loading || slots.isNotEmpty()) BoxWithConstraints(Modifier.fillMaxWidth()) {
@@ -235,7 +306,7 @@ internal fun HomeSpeedDial(
                                 when {
                                     loading -> HomeSkeletonTile(Modifier.weight(1f).fillMaxHeight())
                                     slot >= 0 -> {
-                                        val entry = entries[slot]
+                                        val entry = visibleEntries[slot]
                                         LaunchedEffect(entry.item.id, entry.artworkUrl) {
                                             if (entry.artworkUrl.isNullOrBlank()) onMissingArtwork?.invoke(entry.item)
                                         }
@@ -246,22 +317,23 @@ internal fun HomeSpeedDial(
                                             showPinIcon = showPinIcon,
                                             tileStyle = tileStyle,
                                             showNewReleaseTag = showNewReleaseTags,
+                                            animationStaggerIndex = rowIndex * SPEED_DIAL_COLUMNS + columnIndex,
                                             modifier = Modifier.weight(1f).fillMaxHeight(),
                                             onClick = { onItemClick(entry) },
                                             onLongPress = { onItemLongPress(entry) },
                                         )
                                     }
                                     slot == SLOT_LUCKY -> SpeedDialActionTile(
-                                        label = stringResource(R.string.home_speed_dial_lucky),
-                                        icon = Icons.Rounded.Shuffle,
+                                        action = SpeedDialAction.LUCKY,
                                         modifier = Modifier.weight(1f).fillMaxHeight(),
+                                        tileStyle = tileStyle,
                                         onClick = onLuckyClick,
                                     )
                                     slot == SLOT_HISTORY -> SpeedDialActionTile(
-                                        label = stringResource(R.string.history_title),
-                                        icon = Icons.Rounded.History,
+                                        action = SpeedDialAction.HISTORY,
                                         modifier = Modifier.weight(1f).fillMaxHeight(),
-                                        onClick = onHistoryClick,
+                                        tileStyle = tileStyle,
+                                        onClick = { onHistoryClick(); null },
                                     )
                                     else -> Spacer(Modifier.weight(1f).fillMaxHeight())
                                 }
@@ -316,6 +388,37 @@ internal fun HomeSpeedDial(
     }
 }
 
+@Composable
+private fun HomeSpeedDialHeading(
+    title: String?,
+    onReorderPins: (() -> Unit)?,
+    onCustomize: (() -> Unit)?,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(horizontal = MeloLayout.PageGutter),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (title != null) {
+            Text(
+                text = title,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.headlineLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        } else {
+            Spacer(Modifier.weight(1f))
+        }
+        if (onReorderPins != null) {
+            MeloIconButton(Icons.Rounded.SwapVert, stringResource(R.string.pins_reorder), onReorderPins)
+        }
+        if (onCustomize != null) {
+            MeloIconButton(Icons.Rounded.Tune, stringResource(R.string.home_dial_customize), onCustomize)
+        }
+    }
+}
+
 /** The Mixes Dial sits one horizontal swipe beside Speed Dial, as in Dial. */
 @Composable
 internal fun HomeDialPager(
@@ -349,6 +452,7 @@ internal fun HomeCategoryChips(
     chips: List<YouTubeHomeChip>,
     selected: YouTubeHomeChip?,
     onClick: (YouTubeHomeChip) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val rowState = rememberLazyListState()
     val haptics = LocalHapticFeedback.current
@@ -361,7 +465,7 @@ internal fun HomeCategoryChips(
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         contentPadding = PaddingValues(horizontal = MeloLayout.PageGutter),
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         items(chips, key = YouTubeHomeChip::params) { chip ->
             val isSelected = chip.params == selected?.params
@@ -409,12 +513,19 @@ private fun SpeedDialTile(
     showPinIcon: Boolean,
     tileStyle: String,
     showNewReleaseTag: Boolean,
+    animationStaggerIndex: Int,
     modifier: Modifier,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
 ) {
     val foreground = artworkForeground()
     val interactions = remember { MutableInteractionSource() }
+    val reducedMotion = LocalReducedMotion.current
+    val visual = SpeedDialTileVisual(
+        title = entry.title,
+        artworkUrl = entry.artworkUrl,
+        isNewRelease = entry.isNewRelease || entry.recommendation?.type == `in`.melo.data.HomeRecommendationType.LATEST_RELEASE,
+    )
     Box(
         modifier = modifier
             .homePress(interactions)
@@ -435,71 +546,107 @@ private fun SpeedDialTile(
                 role = Role.Button
             },
     ) {
-        SmartImage(
-            model = entry.artworkUrl,
-            contentDescription = null,
-            contentScale = ContentScale.Crop,
+        AnimatedContent(
+            targetState = visual,
             modifier = Modifier.fillMaxSize(),
-        )
-        if (showLabel) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(MeloLayout.ArtHero)
-                    .align(Alignment.BottomCenter)
-                    .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f)))),
-            )
-            Text(
-                text = entry.title,
-                modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = MeloLayout.Space2, vertical = MeloLayout.Space2),
-                style = MaterialTheme.typography.labelSmall,
-                color = foreground,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (pinned && showPinIcon) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(MeloLayout.Space2)
-                    .size(MeloLayout.IconDefault)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = MeloAlpha.Tertiary)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.PushPin,
+            transitionSpec = {
+                val stagger = if (reducedMotion) 0 else animationStaggerIndex * 38
+                val enter = if (reducedMotion) {
+                    fadeIn(tween(durationMillis = 160))
+                } else {
+                    val timing = tween<Float>(
+                        durationMillis = 380,
+                        delayMillis = stagger,
+                        easing = FastOutSlowInEasing,
+                    )
+                    fadeIn(timing) + scaleIn(initialScale = 0.9f, animationSpec = timing) +
+                        slideInVertically(
+                            animationSpec = tween(durationMillis = 380, delayMillis = stagger, easing = FastOutSlowInEasing),
+                            initialOffsetY = { height -> height / 16 },
+                        )
+                }
+                val exit = if (reducedMotion) {
+                    fadeOut(tween(durationMillis = 120))
+                } else {
+                    val timing = tween<Float>(
+                        durationMillis = 170,
+                        delayMillis = stagger,
+                        easing = FastOutSlowInEasing,
+                    )
+                    fadeOut(timing) + scaleOut(targetScale = 0.98f, animationSpec = timing)
+                }
+                enter togetherWith exit
+            },
+            label = "speedDialRefreshTile",
+        ) { displayedTile ->
+            Box(Modifier.fillMaxSize()) {
+                SmartImage(
+                    model = displayedTile.artworkUrl,
                     contentDescription = null,
-                    modifier = Modifier.size(MeloLayout.IconSmall),
-                    tint = foreground,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
                 )
-            }
-        }
-        if (showNewReleaseTag && (entry.isNewRelease || entry.recommendation?.type == `in`.melo.data.HomeRecommendationType.LATEST_RELEASE)) {
-            Text(
-                text = stringResource(R.string.home_new_music_tag),
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(MeloLayout.Space2)
-                    .clip(CircleShape)
-                    .background(Color.Black.copy(alpha = MeloAlpha.Scrim))
-                    .padding(horizontal = MeloLayout.Space2, vertical = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = foreground,
-                maxLines = 1,
-            )
-        }
-        when (tileStyle) {
-            `in`.melo.data.preferences.AppSettings.DIAL_TILE_STYLE_EDGE -> {
-                Box(Modifier.fillMaxSize().artworkRim(SPEED_DIAL_SHAPE))
-            }
-            `in`.melo.data.preferences.AppSettings.DIAL_TILE_STYLE_GLASS -> {
-                Box(
-                    Modifier
-                        .fillMaxSize()
-                        .artworkRim(SPEED_DIAL_SHAPE, glass = true),
-                )
+                if (showLabel) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(MeloLayout.ArtHero)
+                            .align(Alignment.BottomCenter)
+                            .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.78f)))),
+                    )
+                    Text(
+                        text = displayedTile.title,
+                        modifier = Modifier.align(Alignment.BottomStart).padding(horizontal = MeloLayout.Space2, vertical = MeloLayout.Space2),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = foreground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (pinned && showPinIcon) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(MeloLayout.Space2)
+                            .size(MeloLayout.IconDefault)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = MeloAlpha.Tertiary)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.PushPin,
+                            contentDescription = null,
+                            modifier = Modifier.size(MeloLayout.IconSmall),
+                            tint = foreground,
+                        )
+                    }
+                }
+                if (showNewReleaseTag && displayedTile.isNewRelease) {
+                    Text(
+                        text = stringResource(R.string.home_new_music_tag),
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(MeloLayout.Space2)
+                            .clip(CircleShape)
+                            .background(Color.Black.copy(alpha = MeloAlpha.Scrim))
+                            .padding(horizontal = MeloLayout.Space2, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = foreground,
+                        maxLines = 1,
+                    )
+                }
+                when (tileStyle) {
+                    `in`.melo.data.preferences.AppSettings.DIAL_TILE_STYLE_EDGE -> {
+                        Box(Modifier.fillMaxSize().artworkRim(SPEED_DIAL_SHAPE))
+                    }
+                    `in`.melo.data.preferences.AppSettings.DIAL_TILE_STYLE_GLASS -> {
+                        Box(
+                            Modifier
+                                .fillMaxSize()
+                                .artworkRim(SPEED_DIAL_SHAPE, glass = true),
+                        )
+                    }
+                }
             }
         }
     }
@@ -508,39 +655,132 @@ private fun SpeedDialTile(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SpeedDialActionTile(
-    label: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    action: SpeedDialAction,
     modifier: Modifier,
-    onClick: () -> Unit,
+    tileStyle: String,
+    onClick: () -> Job?,
 ) {
-    val foreground = artworkForeground()
+    val lucky = action == SpeedDialAction.LUCKY
+    val label = stringResource(if (lucky) R.string.home_speed_dial_lucky else R.string.history_title)
+    val description = stringResource(
+        if (lucky) R.string.home_speed_dial_lucky_description else R.string.home_speed_dial_history_description,
+    )
+    val findingDescription = stringResource(R.string.home_speed_dial_lucky_finding)
+    val icon = if (lucky) Icons.Rounded.Shuffle else Icons.Rounded.History
+    val reducedMotion = LocalReducedMotion.current
+    var lookupJob by remember(action) { mutableStateOf<Job?>(null) }
+    LaunchedEffect(lookupJob) {
+        val job = lookupJob ?: return@LaunchedEffect
+        job.join()
+        delay(320L)
+        if (lookupJob === job) lookupJob = null
+    }
+    val mood = if (lucky) HomeMood.PARTY else HomeMood.RELAX
+    val (baseColor, accentColor) = moodColors(mood)
+    val deeperColor = baseColor.copy(
+        red = baseColor.red * 0.72f,
+        green = baseColor.green * 0.72f,
+        blue = baseColor.blue * 0.72f,
+    )
+    val endColor = if (LocalHomeGradients.current) deeperColor else baseColor
     val interactions = remember { MutableInteractionSource() }
-    Box(
+    val rim = when (tileStyle) {
+        `in`.melo.data.preferences.AppSettings.DIAL_TILE_STYLE_EDGE -> Modifier.artworkRim(SPEED_DIAL_SHAPE)
+        `in`.melo.data.preferences.AppSettings.DIAL_TILE_STYLE_GLASS -> Modifier.artworkRim(SPEED_DIAL_SHAPE, glass = true)
+        else -> Modifier
+    }
+    BoxWithConstraints(
         modifier = modifier
             .homePress(interactions)
             .aspectRatio(1f)
             .clip(SPEED_DIAL_SHAPE)
-            .background(MaterialTheme.colorScheme.primaryContainer)
-            .artworkRim(SPEED_DIAL_SHAPE, glass = true)
-            .combinedClickable(role = Role.Button, interactionSource = interactions, indication = null, onClick = onClick, onLongClick = null)
-            .semantics { contentDescription = label; role = Role.Button },
-        contentAlignment = Alignment.Center,
+            .background(Brush.verticalGradient(listOf(baseColor, endColor)))
+            .then(rim)
+            .combinedClickable(
+                enabled = lookupJob == null,
+                role = Role.Button,
+                interactionSource = interactions,
+                indication = null,
+                onClick = { if (lookupJob == null) lookupJob = onClick() },
+                onLongClick = null,
+            )
+            .semantics {
+                contentDescription = "$label. $description"
+                role = Role.Button
+                if (lucky && lookupJob != null) stateDescription = findingDescription
+            },
     ) {
-        MoodArtwork(if (icon == Icons.Rounded.Shuffle) HomeMood.AFTER_HOURS else HomeMood.RELAX, Modifier.fillMaxSize())
-        Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.65f)))))
+        val compact = maxHeight < 100.dp || maxWidth < 100.dp
+        val dense = maxHeight < 112.dp || maxWidth < 112.dp
+        val contentPadding = if (dense) 6.dp else 8.dp
+        val badgeSize = when {
+            compact -> 22.dp
+            dense -> 24.dp
+            else -> 30.dp
+        }
+        val badgeIconSize = when {
+            compact -> 14.dp
+            dense -> 16.dp
+            else -> 18.dp
+        }
         Column(
-            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            modifier = Modifier.fillMaxSize().padding(contentPadding),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(MeloLayout.Space3),
+            verticalArrangement = Arrangement.spacedBy(MeloLayout.Space1),
         ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(30.dp), tint = foreground)
+            Box(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(badgeSize)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.22f))
+                        .border(1.dp, Color.White.copy(alpha = 0.36f), CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (lucky && lookupJob != null && !reducedMotion) {
+                        val transition = rememberInfiniteTransition(label = "luckyFinding")
+                        val rotation by transition.animateFloat(
+                            initialValue = 0f,
+                            targetValue = 360f,
+                            animationSpec = infiniteRepeatable(
+                                animation = tween(900, easing = LinearEasing),
+                                repeatMode = RepeatMode.Restart,
+                            ),
+                            label = "luckyFindingRotation",
+                        )
+                        Icon(
+                            icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(badgeIconSize).rotate(rotation),
+                            tint = accentColor,
+                        )
+                    } else {
+                        Icon(icon, contentDescription = null, modifier = Modifier.size(badgeIconSize), tint = accentColor)
+                    }
+                }
+            }
             Text(
                 text = label,
-                style = MaterialTheme.typography.labelLarge,
-                color = foreground,
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                textAlign = TextAlign.Center,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (!compact) {
+                Text(
+                    text = description,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.9f),
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

@@ -218,15 +218,47 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
     val activeDialSource = if (settings.homeDialSource == AppSettings.DIAL_SOURCE_SPOTIFY && !discovery.spotifyEnabled) {
         AppSettings.DIAL_SOURCE_YOUTUBE
     } else settings.homeDialSource
+    var spotifyDialRefreshKey by remember(model) { mutableStateOf(0) }
     val newReleaseIds = remember(personalizedHome) {
         personalizedHome.filter { it.title.contains("release", ignoreCase = true) || it.title.contains("new music", ignoreCase = true) }
             .flatMap(YouTubeHomeShelf::items).mapTo(HashSet(), Music::id)
     }
+    val youtubeMixEntries = remember(homeRecommendations.youtubeMixes, homeRecommendations.picks, personalizedHome) {
+        buildList {
+            homeRecommendations.youtubeMixes.forEach { add(HomeSpeedDialEntry(it)) }
+            homeRecommendations.picks
+                .filter { it.type in setOf(
+                    HomeRecommendationType.MOOD,
+                    HomeRecommendationType.PERSONAL_STATION,
+                    HomeRecommendationType.NEW_RELEASE_MIX,
+                    HomeRecommendationType.DISCOVERY_STATION,
+                ) }
+                .forEach { pick -> add(HomeSpeedDialEntry(pick.item, pick.title, pick.artworkUrls.firstOrNull(), pick)) }
+            personalizedHome.filter { shelf -> shelf.title.contains("mix", ignoreCase = true) }
+                .flatMap(YouTubeHomeShelf::items).forEach { add(HomeSpeedDialEntry(it)) }
+        }.filter { it.item.kind == MusicKind.Playlist }
+            .distinctBy { it.item.id }
+            .take(SPEED_DIAL_MAX_ITEMS)
+    }
+    val spotifyMixEntries = remember(discovery.spotifyEnabled, content?.playlists) {
+        if (discovery.spotifyEnabled) content?.playlists.orEmpty().map { HomeSpeedDialEntry(it) } else emptyList()
+    }
+    val mixEntries = remember(youtubeMixEntries, spotifyMixEntries) {
+        buildList {
+            repeat(maxOf(youtubeMixEntries.size, spotifyMixEntries.size)) { index ->
+                youtubeMixEntries.getOrNull(index)?.let(::add)
+                spotifyMixEntries.getOrNull(index)?.let(::add)
+            }
+        }.distinctBy { it.item.id }.take(SPEED_DIAL_MAX_ITEMS)
+    }
+    val mixItemIds = remember(youtubeMixEntries, settings.homeMixesDialEnabled) {
+        if (settings.homeMixesDialEnabled) youtubeMixEntries.mapTo(HashSet()) { it.item.id } else emptySet()
+    }
     val speedDialEntries = remember(
         filteredHome, youTubeHome.shelves, personalizedHome, newReleaseIds, pins, homeRecent, homeRecommendations.picks,
-        homeRecommendations.youtubeMixes, localPlaylists, youTubePlaylists, localFiles, downloads, content,
-        ui.likedSongs, activeDialSource, settings.homeDialOrder, settings.homeArtistDialEnabled,
-        discovery.spotifyEnabled, spotifyHistory,
+        homeRecommendations.youtubeMixes, mixItemIds, localPlaylists, youTubePlaylists, localFiles, downloads, content,
+        ui.likedSongs, activeDialSource, settings.homeArtistDialEnabled,
+        discovery.spotifyEnabled, spotifyHistory, spotifyDialRefreshKey,
     ) {
         if (filteredHome) {
             categoryDialEntries(youTubeHome.shelves).distinctBy { it.item.id }.take(SPEED_DIAL_MAX_ITEMS)
@@ -239,11 +271,16 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                     addAll(content?.playlists.orEmpty())
                     addAll(content?.albums.orEmpty())
                     addAll(content?.artists.orEmpty())
-                }
+                // Keep the Spotify order stable through playback-driven recompositions;
+                // only the explicit refresh key should produce a new shuffle.
+                }.shuffled(kotlin.random.Random(spotifyDialRefreshKey))
                 else -> buildList {
-                    personalizedHome.forEach { addAll(it.items) }
+                    // Recommendation picks are rebuilt and reshuffled on refresh.
+                    // Put them before the long personalized feed so the Speed
+                    // Dial's page cap doesn't hide every refreshed pick.
+                    addAll(homeRecommendations.picks.filterNot { it.item.id in mixItemIds }.map(HomeRecommendationPick::item))
+                    personalizedHome.forEach { shelf -> addAll(shelf.items.filterNot { it.id in mixItemIds }) }
                     addAll(homeRecent.filter { it.source == `in`.melo.data.MusicSource.YouTubeMusic })
-                    addAll(homeRecommendations.picks.map(HomeRecommendationPick::item))
                 }
             }
             buildList {
@@ -260,7 +297,7 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                     )) else add(HomeSpeedDialEntry(item, isNewRelease = item.id in newReleaseIds))
                 }
                 homeRecommendations.picks.forEach { pick ->
-                    if (activeDialSource == AppSettings.DIAL_SOURCE_YOUTUBE) {
+                    if (activeDialSource == AppSettings.DIAL_SOURCE_YOUTUBE && pick.item.id !in mixItemIds) {
                         add(HomeSpeedDialEntry(
                             item = pick.item,
                             title = pick.title,
@@ -279,23 +316,11 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
             }.distinctBy { it.item.id }
                 .let { entries ->
                     val pinnedEntries = entries.filter { entry -> pins.any { it.id == entry.item.id } }
-                    pinnedEntries + orderDialEntries(entries.filterNot { entry -> pins.any { it.id == entry.item.id } }, settings.homeDialOrder)
+                    pinnedEntries + entries.filterNot { entry -> pins.any { it.id == entry.item.id } }
                 }
                 .let { entries -> if (settings.homeArtistDialEnabled) entries.filterNot { it.item.kind == MusicKind.Artist } else entries }
                 .take(SPEED_DIAL_MAX_ITEMS)
         }
-    }
-    val mixEntries = remember(homeRecommendations.youtubeMixes, homeRecommendations.picks, personalizedHome) {
-        buildList {
-            homeRecommendations.youtubeMixes.forEach { add(HomeSpeedDialEntry(it)) }
-            homeRecommendations.picks
-                .filter { it.type in setOf(HomeRecommendationType.PERSONAL_STATION, HomeRecommendationType.NEW_RELEASE_MIX, HomeRecommendationType.DISCOVERY_STATION) }
-                .forEach { pick -> add(HomeSpeedDialEntry(pick.item, pick.title, pick.artworkUrls.firstOrNull(), pick)) }
-            personalizedHome.filter { shelf -> shelf.title.contains("mix", ignoreCase = true) }
-                .flatMap(YouTubeHomeShelf::items).forEach { add(HomeSpeedDialEntry(it)) }
-        }.filter { it.item.kind == MusicKind.Playlist }
-            .distinctBy { it.item.id }
-            .take(SPEED_DIAL_MAX_ITEMS)
     }
     val artistDialEntries = remember(pins, homeRecommendations.youtubeArtists, content?.artists, personalizedHome, settings.homeArtistDialOrder, homeDetails) {
         val artists = buildList {
@@ -318,6 +343,22 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
     var refreshRequested by remember { mutableStateOf(false) }
     val servicesBusy = library.loading || homeRecommendations.loading || youTubeHome.personalizedLoading ||
         youTubeHome.loadingCategories || youTubeHome.loading
+    var displayedSpeedDialEntries by remember(model) { mutableStateOf(speedDialEntries) }
+    var displayedMixEntries by remember(model) { mutableStateOf(mixEntries) }
+    val hasLuckyPick = settings.homeLuckyTileEnabled && (
+        homeRecommendations.picks.any { it.type != HomeRecommendationType.LATEST_RELEASE } ||
+            homeRecent.isNotEmpty() || pins.any { it.kind == MusicKind.Track }
+        )
+    var displayedLuckyTile by remember(model) { mutableStateOf(hasLuckyPick) }
+    LaunchedEffect(refreshRequested, servicesBusy, speedDialEntries, mixEntries, hasLuckyPick) {
+        if (!refreshRequested && !servicesBusy) {
+            // Keep the current dial intact while all refresh sources load, then
+            // commit one complete snapshot so its tiles can transition together.
+            displayedSpeedDialEntries = speedDialEntries
+            displayedMixEntries = mixEntries
+            displayedLuckyTile = hasLuckyPick
+        }
+    }
     LaunchedEffect(refreshRequested, servicesBusy) {
         if (refreshRequested && !servicesBusy) {
             delay(180)
@@ -335,11 +376,13 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
         }
     }
     val showHomeSkeleton = homeRequestBusy || completingLoad
+    val showSpeedDialSkeleton = showHomeSkeleton && displayedSpeedDialEntries.isEmpty()
     val pullState = rememberPullToRefreshState()
     val hasArtistPage = showArtistDial && !showHomeSkeleton
-    val homeSpeedDialVisible = settings.homeSpeedDialEnabled && (speedDialEntries.isNotEmpty() || youTubeHome.chips.isNotEmpty() || showHomeSkeleton)
+    val homeSpeedDialVisible = settings.homeSpeedDialEnabled &&
+        (displayedSpeedDialEntries.isNotEmpty() || youTubeHome.chips.isNotEmpty() || showSpeedDialSkeleton)
     val feedCategoriesIndex = (if (homeSpeedDialVisible) 1 else 0) + (if (hasArtistPage) 1 else 0)
-    val speedDialItemIds = remember(speedDialEntries) { speedDialEntries.mapTo(HashSet()) { it.item.id } }
+    val speedDialItemIds = remember(displayedSpeedDialEntries) { displayedSpeedDialEntries.mapTo(HashSet()) { it.item.id } }
     val overflowPins = remember(pins, speedDialItemIds, filteredHome) {
         if (filteredHome) emptyList() else pins.filterNot { it.id in speedDialItemIds }
     }
@@ -408,6 +451,9 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                     onReorderPinsClick = if (pins.size > 1) ({ reordering = true }) else null,
                     onHistoryClick = { navController.navigateSafely(Screen.History.route) },
                     profileImageUrl = youTubeAccount?.photoUrl,
+                    profileName = youTubeAccount?.name,
+                    profileHandle = youTubeAccount?.handle,
+                    spotifyConnected = discovery.spotifyEnabled,
                     onProfileClick = { navController.navigateSafely(Screen.SettingsCategory.createRoute("account")) },
                     onSearchClick = { navController.navigateSafely(Screen.Search.route) },
                     isScrolled = isScrolled,
@@ -423,8 +469,8 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                 ).coerceAtLeast(360.dp)
             val dialFooter = paddingValues.calculateBottomPadding() +
                 (if (hasSong) MiniPlayerHeight + 8.dp else 0.dp) + 12.dp
-            val hasCategoryRow = youTubeHome.chips.isNotEmpty()
-            val speedGridRoom = (dialPageHeight - dialFooter - if (hasCategoryRow) 148.dp else 90.dp).coerceAtLeast(180.dp)
+            // Keep both swipe pages' tile grids the same size and at the same vertical position.
+            val dialGridRoom = (dialPageHeight - dialFooter - HOME_DIAL_PAGER_GRID_RESERVE).coerceAtLeast(180.dp)
             val titledGridRoom = (dialPageHeight - dialFooter - 134.dp).coerceAtLeast(180.dp)
             Box(Modifier.fillMaxSize()) {
             PullToRefreshBox(
@@ -433,6 +479,7 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                 indicator = {},
                 onRefresh = {
                     refreshRequested = true
+                    if (activeDialSource == AppSettings.DIAL_SOURCE_SPOTIFY) spotifyDialRefreshKey++
                     model.refreshHome()
                 },
                 modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
@@ -454,7 +501,7 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                                     mixesAvailable = !filteredHome && settings.homeMixesDialEnabled,
                                     speedDial = {
                                         HomeSpeedDial(
-                                            entries = speedDialEntries,
+                                            entries = displayedSpeedDialEntries,
                                             pinnedIds = if (filteredHome) emptySet() else pins.mapTo(HashSet(), Music::id),
                                             categoryChips = youTubeHome.chips,
                                             selectedCategory = youTubeHome.selected,
@@ -462,18 +509,14 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                                             onItemClick = { entry ->
                                                 val pick = entry.recommendation
                                                 when {
-                                                    filteredHome && entry.item.kind == MusicKind.Track -> model.loadRadio(entry.item, open)
                                                     pick != null && pick.type == HomeRecommendationType.LATEST_RELEASE -> open(pick.item)
                                                     pick != null -> model.playHomeRecommendation(pick)
-                                                    entry.item.kind == MusicKind.Track -> ui.playItem(entry.item)
+                                                    entry.item.kind == MusicKind.Track -> ui.playTrack(entry.item)
                                                     else -> open(entry.item)
                                                 }
                                             },
                                             onItemLongPress = { entry -> showOptions(entry.item) },
-                                            hasLuckyTile = !filteredHome && settings.homeLuckyTileEnabled && (
-                                                homeRecommendations.picks.any { it.type != HomeRecommendationType.LATEST_RELEASE } ||
-                                                    homeRecent.isNotEmpty() || pins.any { it.kind == MusicKind.Track }
-                                                ),
+                                            hasLuckyTile = !filteredHome && displayedLuckyTile,
                                             onLuckyClick = {
                                                 val picks = homeRecommendations.picks.filter { it.type != HomeRecommendationType.LATEST_RELEASE }
                                                 val pick = picks.randomOrNull()
@@ -483,17 +526,20 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                                                     (homeRecent + pins.filter { it.kind == MusicKind.Track })
                                                         .distinctBy(Music::id)
                                                         .randomOrNull()
-                                                        ?.let(ui::playItem)
+                                                        ?.let(ui::playTrack)
+                                                    null
                                                 }
                                             },
                                             onHistoryClick = { navController.navigateSafely(Screen.History.route) },
                                             onReorderPins = null,
                                             onCustomize = null,
-                                            loading = showHomeSkeleton,
+                                            sharedPagerHeader = true,
+                                            maxPages = SPEED_DIAL_MAX_PAGES,
+                                            loading = showSpeedDialSkeleton,
                                             rows = settings.homeDialRows,
                                             pageHeight = dialPageHeight,
                                             footerReserve = dialFooter,
-                                            maxGridHeight = speedGridRoom,
+                                            maxGridHeight = dialGridRoom,
                                             showLabels = settings.homeDialLabels,
                                             showPinIcon = settings.homeDialPinIcon,
                                             tileStyle = settings.homeDialTileStyle,
@@ -507,23 +553,27 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                                     },
                                     mixesDial = {
                                         HomeSpeedDial(
-                                            entries = mixEntries,
+                                            entries = displayedMixEntries,
                                             pinnedIds = emptySet(),
                                             categoryChips = emptyList(),
                                             selectedCategory = null,
                                             onCategoryClick = {},
-                                            onItemClick = { entry -> open(entry.item) },
+                                            onItemClick = { entry ->
+                                                entry.recommendation?.let(model::playHomeRecommendation) ?: open(entry.item)
+                                            },
                                             onItemLongPress = { entry -> showOptions(entry.item) },
                                             hasLuckyTile = false,
-                                            onLuckyClick = {},
+                                            onLuckyClick = { null },
                                             onHistoryClick = {},
                                             onReorderPins = null,
                                             title = stringResource(R.string.home_dial_mixes_title),
-                                            loading = showHomeSkeleton,
+                                            sharedPagerHeader = true,
+                                            maxPages = 1,
+                                            loading = showHomeSkeleton && displayedMixEntries.isEmpty(),
                                             rows = settings.homeDialRows,
                                             pageHeight = dialPageHeight,
                                             footerReserve = dialFooter,
-                                            maxGridHeight = titledGridRoom,
+                                            maxGridHeight = dialGridRoom,
                                             showLabels = settings.homeDialLabels,
                                             showPinIcon = false,
                                             tileStyle = settings.homeDialTileStyle,
@@ -550,7 +600,7 @@ fun HomeScreen(model: MeloModel, navController: NavHostController, paddingValues
                                 onItemClick = { entry -> open(entry.item) },
                                 onItemLongPress = { entry -> showOptions(entry.item) },
                                 hasLuckyTile = false,
-                                onLuckyClick = {},
+                                onLuckyClick = { null },
                                 onHistoryClick = {},
                                 onReorderPins = if (artistDialEntries.size > 1) ({ reorderingArtists = true }) else null,
                                 title = stringResource(R.string.home_dial_artists_title),

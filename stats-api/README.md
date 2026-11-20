@@ -12,7 +12,7 @@ The server HMACs installation UUIDs before storage. It stores no account identif
 
 ## Required Vercel environment variables
 
-- Upstash REST URL and token. The API accepts `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` or Vercel Marketplace's default `STORAGE_URL` / `STORAGE_TOKEN` names.
+- Upstash REST URL and write token. The API accepts `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`, Vercel Marketplace's `KV_REST_API_URL` / `KV_REST_API_TOKEN`, or the custom-prefix `STORAGE_URL` / `STORAGE_TOKEN` names. Do not use the read-only token because the API writes counters.
 - `MELO_STATS_HASH_SECRET` — a randomly generated secret of at least 32 characters. Keep it in Vercel environment variables; never place it in Android code or commit it.
 
 The Android build defaults to `https://api.melo.aarushsagar.com/api/presence`; override it with `-PmeloStatsEndpoint=...` when building for another deployment.
