@@ -570,7 +570,7 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
         SoundCloudFailure.STATUS_UNAVAILABLE -> `in`.melo.R.string.soundcloud_track_unavailable
         SoundCloudFailure.STATUS_EMPTY -> `in`.melo.R.string.soundcloud_nothing_similar
         SoundCloudFailure.STATUS_RATE_LIMITED -> `in`.melo.R.string.soundcloud_rate_limited
-        SoundCloudFailure.STATUS_CLIENT, SoundCloudFailure.STATUS_REFUSED -> `in`.melo.R.string.soundcloud_unreachable
+        SoundCloudFailure.STATUS_CLIENT, SoundCloudFailure.STATUS_REFUSED, SoundCloudFailure.STATUS_NO_ACCESS ->`in`.melo.R.string.soundcloud_unreachable
         else -> `in`.melo.R.string.soundcloud_failed
     })
 

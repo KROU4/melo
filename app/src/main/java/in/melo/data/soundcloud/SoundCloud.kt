@@ -32,7 +32,10 @@ class SoundCloudFailure(message: String, val status: String? = null) : IOExcepti
         const val STATUS_UNAVAILABLE = "UNAVAILABLE"
         const val STATUS_CLIENT = "CLIENT"
         const val STATUS_RATE_LIMITED = "RATE_LIMITED"
+        /** Refused, possibly because the client id is stale and could not be renewed yet: worth retrying later. */
         const val STATUS_REFUSED = "REFUSED"
+        /** Refused with a client id known to be current: this resource is not served to this client. */
+        const val STATUS_NO_ACCESS = "NO_ACCESS"
         const val STATUS_EMPTY = "EMPTY"
 
         /** Failures that retrying cannot fix. */
@@ -135,7 +138,8 @@ object SoundCloud {
             DiagnosticLog.record("soundcloud", "client id not found")
             throw SoundCloudFailure("SoundCloud could not be reached.", SoundCloudFailure.STATUS_CLIENT)
         }
-        if (found == stale) throw SoundCloudFailure("SoundCloud refused the request.", SoundCloudFailure.STATUS_REFUSED)
+        // The site still gives the refused id: it is current, and the request itself is refused.
+        if (found == stale) throw SoundCloudFailure("SoundCloud refused the request.", SoundCloudFailure.STATUS_NO_ACCESS)
         clientId = found
         preferences?.edit { putString(KEY_CLIENT_ID, found) }
         return found
@@ -189,8 +193,9 @@ object SoundCloud {
                         DiagnosticLog.record("soundcloud", "http=${response.code}, renewing client id")
                         id = renewClientId(id)
                     }
+                    // Refused again with the id just renewed: the request itself is refused.
                     response.code == 401 || response.code == 403 ->
-                        throw SoundCloudFailure("SoundCloud refused the request.", SoundCloudFailure.STATUS_REFUSED)
+                        throw SoundCloudFailure("SoundCloud refused the request.", SoundCloudFailure.STATUS_NO_ACCESS)
                     else -> throw SoundCloudFailure("SoundCloud answered ${response.code}.", "HTTP_${response.code}")
                 }
             }
@@ -485,11 +490,11 @@ object SoundCloud {
     private const val MAX_CLIENT_SCRIPTS = 12
     private const val MIN_RENEWAL_INTERVAL_MS = 60_000L
     /**
-     * Answers that mean a stream is not served to this client, whatever the retry. REFUSED is only
-     * thrown once the client id was renewed or found current (see [api]): the refusal is the stream's.
-     * HTTP_* come from the CDN that serves the playlist.
+     * Answers that mean a stream is not served to this client, whatever the retry. NO_ACCESS is only
+     * thrown once the client id was renewed or found current (see [api]); a REFUSED that may come
+     * from a stale id is not one of them. HTTP_* come from the CDN that serves the playlist.
      */
-    private val NO_STREAM = setOf(SoundCloudFailure.STATUS_NOT_FOUND, SoundCloudFailure.STATUS_REFUSED, "HTTP_403", "HTTP_404", "HTTP_410")
+    private val NO_STREAM = setOf(SoundCloudFailure.STATUS_NOT_FOUND, SoundCloudFailure.STATUS_NO_ACCESS, "HTTP_403", "HTTP_404", "HTTP_410")
     private const val HEADS_PER_EXTRA_SECOND = 8
     private const val PREFERENCES = "soundcloud"
     private const val KEY_CLIENT_ID = "client_id"
