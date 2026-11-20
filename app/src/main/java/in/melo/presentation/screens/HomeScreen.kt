@@ -961,7 +961,7 @@ private fun PinnedPill(
                     color = title
                 )
                 Text(
-                    text = item.subtitle.ifBlank { item.kind.label },
+                    text = item.subtitle.ifBlank { stringResource(item.kind.labelRes) },
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

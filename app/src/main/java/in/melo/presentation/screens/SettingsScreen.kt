@@ -256,7 +256,7 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
                 label = stringResource(R.string.settings_app_language_title), description = "",
                 options = mapOf(
                     AppSettings.LANGUAGE_SYSTEM to stringResource(R.string.settings_language_system),
-                    "fr" to "Français", "en" to "English",
+                    "fr" to "Français", "en" to "English", "ru" to "Русский",
                 ),
                 selectedKey = s.language,
                 onSelectionChanged = { key -> update { it.copy(language = key) }; AppLocales.apply(context, key) },
@@ -306,7 +306,7 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
             )
             ThemeSelectorItem(
                 label = stringResource(R.string.settings_album_art_palette_title), description = "",
-                options = AlbumArtPaletteStyle.entries.associate { it.storageKey to it.label },
+                options = AlbumArtPaletteStyle.entries.associate { it.storageKey to stringResource(it.labelRes) },
                 selectedKey = s.palette,
                 onSelectionChanged = { key -> update { it.copy(palette = key) } },
                 leadingIcon = { Icon(Icons.Outlined.Style, null, tint = MaterialTheme.colorScheme.secondary) },
@@ -329,7 +329,7 @@ private fun AppearanceSettings(model: MeloModel, navController: NavHostControlle
         SettingsSection(title = stringResource(R.string.settings_home_collage_section), icon = {}) {
             ThemeSelectorItem(
                 label = stringResource(R.string.settings_collage_pattern_title), description = "",
-                options = CollagePattern.entries.associate { it.storageKey to it.label },
+                options = CollagePattern.entries.associate { it.storageKey to stringResource(it.labelRes) },
                 selectedKey = s.collagePattern,
                 onSelectionChanged = { key -> update { it.copy(collagePattern = key) } },
                 leadingIcon = { Icon(painterResource(R.drawable.rounded_view_column_24), null, tint = MaterialTheme.colorScheme.secondary) },
@@ -466,10 +466,20 @@ private fun BehaviorSettings(model: MeloModel, navController: NavHostController)
     }
 }
 
-internal fun formatSize(bytes: Long): String = when {
-    bytes >= 1L shl 30 -> String.format(java.util.Locale.getDefault(), "%.1f Go", bytes / (1L shl 30).toDouble())
-    bytes >= 1L shl 20 -> String.format(java.util.Locale.getDefault(), "%.0f Mo", bytes / (1L shl 20).toDouble())
-    else -> "${bytes / 1024} Ko"
+internal fun formatSize(bytes: Long): String = formatSize(bytes, java.util.Locale.getDefault())
+
+/** A storage size with the unit names of [locale]: Go/Mo/Ko in French, ГБ/МБ/КБ in Russian, GB/MB/KB otherwise. */
+internal fun formatSize(bytes: Long, locale: java.util.Locale): String {
+    val (giga, mega, kilo) = when (locale.language) {
+        "fr" -> Triple("Go", "Mo", "Ko")
+        "ru" -> Triple("ГБ", "МБ", "КБ")
+        else -> Triple("GB", "MB", "KB")
+    }
+    return when {
+        bytes >= 1L shl 30 -> String.format(locale, "%.1f %s", bytes / (1L shl 30).toDouble(), giga)
+        bytes >= 1L shl 20 -> String.format(locale, "%.0f %s", bytes / (1L shl 20).toDouble(), mega)
+        else -> "${bytes / 1024} $kilo"
+    }
 }
 
 @Composable
