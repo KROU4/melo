@@ -34,6 +34,8 @@ data class Playback(
     val audioFormat: String = "",
     /** Tracks the user queued, waiting right after the current one. */
     val queuedCount: Int = 0,
+    /** Held back by the system (a call took the audio focus): it plays on by itself afterwards. */
+    val suppressed: Boolean = false,
 ) { val track: Music? get() = queue.getOrNull(index) }
 
 /** Outlives the activity, like the playback service whose queue it describes. */
@@ -53,10 +55,10 @@ private object ShuffleMemory {
 }
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
+class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable, WavePlayer {
     private val appContext = context.applicationContext
     private val mutableState = MutableStateFlow(Playback())
-    val state = mutableState.asStateFlow()
+    override val state = mutableState.asStateFlow()
     private var controller: MediaController? = null
     private var pending: Pair<List<Music>, Int>? = null
     private val future = MediaController.Builder(context,
@@ -81,6 +83,8 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
      */
     private var before: List<Music> = emptyList()
     private var after: List<Music> = emptyList()
+    /** The context grows at its end (My Wave): "repeat all" never brings its start back. */
+    private var endless = false
     init {
         ShuffleMemory.load(appContext)
         future.addListener({
@@ -91,19 +95,27 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
         }, ContextCompat.getMainExecutor(context))
         scope.launch { while (true) { delay(300); controller?.let(::update) } }
     }
-    fun play(queue: List<Music>, index: Int = 0) {
-        val selected = queue.getOrNull(index) ?: return
-        if (!selected.isPlayableTrack()) return
+    fun play(queue: List<Music>, index: Int = 0) { play(queue, index, endless = false) }
+    /**
+     * Starts [queue] at [index]. An [endless] context (My Wave) keeps its order, as its curation
+     * spaces out artists, and grows through [appendContext] instead of starting over on "repeat all".
+     */
+    private fun play(queue: List<Music>, index: Int, endless: Boolean): Boolean {
+        val selected = queue.getOrNull(index) ?: return false
+        if (!selected.isPlayableTrack()) return false
+        this.endless = endless
         val playable = queue.filter(Music::isPlayableTrack)
         val first = queue.take(index).count(Music::isPlayableTrack)
+        val shuffled = ShuffleMemory.enabled && !endless
         // Shuffle reorders the queue itself: the chosen track plays first and every other one follows.
-        ShuffleMemory.original = playable.takeIf { ShuffleMemory.enabled }
-        val tracks = if (ShuffleMemory.enabled) listOf(playable[first]) + (playable.take(first) + playable.drop(first + 1)).shuffled() else playable
-        val start = if (ShuffleMemory.enabled) 0 else first
+        ShuffleMemory.original = playable.takeIf { shuffled }
+        val tracks = if (shuffled) listOf(playable[first]) + (playable.take(first) + playable.drop(first + 1)).shuffled() else playable
+        val start = if (shuffled) 0 else first
         mutableState.value = Playback(window(tracks, start).first, start - windowStart(start), buffering = true,
             durationMs = selected.durationMs, shuffle = ShuffleMemory.enabled, canNext = start < tracks.lastIndex)
-        if (controller == null) { pending = tracks to start; return }
+        if (controller == null) { pending = tracks to start; return true }
         load(tracks, start)
+        return true
     }
     private fun windowStart(start: Int) = (start - WINDOW_BEHIND).coerceAtLeast(0)
     /** The part of [tracks] the player holds when [start] plays, and what stays out before and after it. */
@@ -150,6 +162,50 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
         player.addMediaItems(player.currentMediaItemIndex + 1, valid.map { mediaItem(it, queued = true) })
         queueChanged = true; update(player)
     } }
+    override fun canPlay(track: Music): Boolean = track.isPlayableTrack()
+    override fun startEndless(tracks: List<Music>): Boolean = play(tracks, 0, endless = true)
+    /**
+     * Adds [tracks] at the end of the context, after everything already there, without touching
+     * what plays: an endless queue (My Wave) grows this way as playback nears its end.
+     * Returns how many tracks were added.
+     */
+    override fun appendContext(tracks: List<Music>): Int = controller?.let { player ->
+        val valid = tracks.filter(Music::isPlayableTrack)
+        if (valid.isEmpty()) return 0
+        if (player.mediaItemCount == 0) return if (play(valid, 0, endless = true)) valid.size else 0
+        ShuffleMemory.original = ShuffleMemory.original?.plus(valid)
+        if (after.isNotEmpty()) after = after + valid else player.addMediaItems(valid.map(::mediaItem))
+        // A queue that ran out while the batch was on its way goes on with it.
+        if (player.playbackState == Player.STATE_ENDED && player.hasNextMediaItem()) { player.seekToNextMediaItem(); player.play() }
+        queueChanged = true; update(player)
+        valid.size
+    } ?: 0
+    override fun keepEndless() { endless = true }
+    /**
+     * Makes [tracks] follow the current track in place of the rest of the context, as an endless
+     * context: the current track keeps playing (or starts), the tracks before it stay for
+     * "Previous", and the tracks the user queued stay right after it. Returns how many tracks follow.
+     */
+    override fun continueWith(tracks: List<Music>): Int = controller?.let { player ->
+        val valid = tracks.filter(Music::isPlayableTrack)
+        if (valid.isEmpty()) return 0
+        if (player.mediaItemCount == 0) return if (play(valid, 0, endless = true)) valid.size else 0
+        endless = true
+        ShuffleMemory.original = null
+        val current = player.currentMediaItemIndex
+        val earlier = before + (0 until current).map { music(player.getMediaItemAt(it)) }
+        replaceAroundCurrent(player, earlier, valid, userQueue(player))
+        // A queue that already ended goes on with what follows; a paused or stopped one resumes.
+        if (player.playbackState == Player.STATE_ENDED && player.hasNextMediaItem()) player.seekToNextMediaItem()
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        if (!player.isPlaying) player.play()
+        queueChanged = true; update(player)
+        valid.size
+    } ?: 0
+    /** How many tracks of the context follow the current one, waiting ones included. */
+    override fun remainingAhead(): Int = controller?.let { player ->
+        if (player.mediaItemCount == 0) 0 else (player.mediaItemCount - 1 - player.currentMediaItemIndex).coerceAtLeast(0) + after.size
+    } ?: 0
     /** The whole context and the position of the current track in it. */
     fun context(): Pair<List<Music>, Int> = (before + queue) + after to before.size + mutableState.value.index
     /** Keeps a margin of tracks on both sides of the current one, and the player small. */
@@ -159,7 +215,7 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
         val current = player.currentMediaItemIndex
         if (count - 1 - current < REFILL_AT) {
             // With "repeat all", the start of the context follows its end.
-            val source = if (after.isEmpty() && player.repeatMode == Player.REPEAT_MODE_ALL) before else after
+            val source = if (after.isEmpty() && player.repeatMode == Player.REPEAT_MODE_ALL && !endless) before else after
             if (source.isNotEmpty()) {
                 val chunk = source.take(CHUNK)
                 if (source === after) after = after.drop(CHUNK) else before = before.drop(CHUNK)
@@ -192,6 +248,14 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
         if (failed) player.prepare()
     } }
     fun shuffle() { controller?.let { player ->
+        if (endless) {
+            // An endless context (My Wave) keeps its curated order and its history: shuffle is
+            // remembered for the next playlist or album and leaves the wave as it is.
+            ShuffleMemory.enabled = !ShuffleMemory.enabled
+            ShuffleMemory.save(appContext)
+            update(player)
+            return
+        }
         val queued = userQueue(player)
         val window = (0 until player.mediaItemCount).map { music(player.getMediaItemAt(it)) }
         val local = player.currentMediaItemIndex
@@ -232,7 +296,7 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
     fun stop() {
         pending = null; ShuffleMemory.original = null
         queueChanged = true
-        before = emptyList(); after = emptyList()
+        before = emptyList(); after = emptyList(); endless = false
         controller?.stop(); controller?.clearMediaItems(); mutableState.value = Playback(shuffle = ShuffleMemory.enabled)
     }
     fun pause() { controller?.pause() }
@@ -287,7 +351,7 @@ class SpotifyPlayer(context: Context, scope: CoroutineScope) : AutoCloseable {
         mutableState.value = Playback(queue, index, player.isPlaying, player.playbackState == Player.STATE_BUFFERING,
             player.currentPosition.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(), duration.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(),
             ShuffleMemory.enabled, player.repeatMode, error, player.hasNextMediaItem() || after.isNotEmpty(), player.playWhenReady, currentAudioFormat(player),
-            userQueue(player).size)
+            userQueue(player).size, player.playbackSuppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE)
     }
     private companion object {
         const val WINDOW_BEHIND = 20
