@@ -22,7 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -32,7 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.draw.drawWithContent
-import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -114,12 +114,9 @@ private fun PlayerInternalNavigationItemsRow(
     // e.g. FULL_WIDTH→DEFAULT where bottomBarPadding starts at 0 and animates to systemNavBarInset.
     val innerRowPadding = (navBarInsetPadding - bottomBarPadding).coerceAtLeast(0.dp)
     val latestNavigationEnabled by rememberUpdatedState(currentRoute != null)
-    // The size every label is drawn at: the smallest one a label had to shrink to. Starts over when
-    // the window or the font scale changes.
-    val configuration = LocalConfiguration.current
-    val sharedLabelSp = remember(configuration.screenWidthDp, configuration.fontScale, navItems) {
-        mutableFloatStateOf(Float.MAX_VALUE)
-    }
+    // The size each label fits at, by route. Every label is drawn at the smallest of them, so the row
+    // reads as one; a label that fits larger again (a wider bar) raises its own entry.
+    val labelSizes = remember(navItems) { mutableStateMapOf<String, Float>() }
 
     val rowModifier = if (navBarStyle == NavBarStyle.FULL_WIDTH) {
         modifier
@@ -170,21 +167,25 @@ private fun PlayerInternalNavigationItemsRow(
             val labelLambda: (@Composable () -> Unit)? = if (compactMode) {
                 null
             } else {
-                remember(localizedLabel, sharedLabelSp) {
+                val route = item.screen.route
+                remember(localizedLabel, labelSizes, route) {
                     {
                         // Longer translations ("Bibliothèque", "Медиатека") must not wrap mid-word on narrow
                         // screens or at large font scales: keep one line and shrink the text to fit instead.
-                        // The size steps down while the laid out text overflows the tab, so it follows the
-                        // font actually drawn (the app font loads after the first layout). Text's own auto
+                        // The size steps down while the laid out text overflows the tab. Text's own auto
                         // size kept the full size here and let "Моя волна" run into the next tab.
-                        // All labels then take the smallest size any of them needed, so they read as one row.
                         BoxWithConstraints(contentAlignment = Alignment.Center) {
-                            val base = LocalTextStyle.current
-                            var fitted by remember(localizedLabel, base, constraints.maxWidth, sharedLabelSp) { mutableStateOf(base) }
-                            var fits by remember(localizedLabel, base, constraints.maxWidth, sharedLabelSp) { mutableStateOf(false) }
-                            val shown = if (fits) labelAt(base, minOf(sharedLabelSp.floatValue, fitted.fontSize.value)) else fitted
+                            // Only what changes the layout restarts the fit: the colour, which follows the
+                            // selected tab, is passed to the text on its own.
+                            val provided = LocalTextStyle.current
+                            val base = provided.copy(color = Color.Unspecified)
+                            var fitted by remember(localizedLabel, base, constraints.maxWidth) { mutableStateOf(base) }
+                            var fits by remember(localizedLabel, base, constraints.maxWidth) { mutableStateOf(false) }
+                            val shared = labelSizes.values.minOrNull() ?: Float.MAX_VALUE
+                            val shown = if (fits) labelAt(base, minOf(shared, fitted.fontSize.value)) else fitted
                             Text(
                                 localizedLabel,
+                                color = provided.color,
                                 style = shown,
                                 maxLines = 1,
                                 softWrap = false,
@@ -194,9 +195,7 @@ private fun PlayerInternalNavigationItemsRow(
                                         fitted = smaller
                                     } else {
                                         fits = true
-                                        if (shown.fontSize.isSp && shown.fontSize.value < sharedLabelSp.floatValue) {
-                                            sharedLabelSp.floatValue = shown.fontSize.value
-                                        }
+                                        if (fitted.fontSize.isSp) labelSizes[route] = fitted.fontSize.value
                                     }
                                 },
                                 // An overflowing step is not drawn, so the label does not flicker while it shrinks.
