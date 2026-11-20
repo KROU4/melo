@@ -73,12 +73,15 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import kotlinx.coroutines.withContext
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -382,13 +385,24 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
     private val mutableSoundCloudLoading = MutableStateFlow(false)
     val soundCloudLoading = mutableSoundCloudLoading.asStateFlow()
     private var soundCloudJob: Job? = null
+    /** The profile [soundCloudJob] reads. */
+    private var soundCloudJobProfile = 0L
 
     /** Links a public profile by name or address, then reads its likes and playlists. [done] gets an error text or null. */
     fun linkSoundCloud(input: String, done: (String?) -> Unit) {
         viewModelScope.launch {
             try {
                 val profile = withContext(Dispatchers.IO) { SoundCloud.profile(input) }
-                if (profile.id != mutableSoundCloudProfile.value?.id) installSoundCloudPlaylists(emptyList())
+                val previous = mutableSoundCloudProfile.value
+                if (profile.id != previous?.id) {
+                    // A read of the previous profile must not land under this one: it ends before its likes are removed.
+                    soundCloudJob?.cancelAndJoin()
+                    installSoundCloudPlaylists(emptyList())
+                    previous?.likesId?.let { old ->
+                        mutableDetails.update { it - old }
+                        launch(Dispatchers.IO) { store.removeDetail(old) }
+                    }
+                }
                 mutableSoundCloudProfile.value = profile
                 preferences.edit { putString(KEY_SOUNDCLOUD_PROFILE, encodeSoundCloudProfile(profile)) }
                 done(null)
@@ -403,25 +417,36 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
 
     /** Forgets the linked profile and what was read from it. Nothing changes on SoundCloud. */
     fun unlinkSoundCloud() {
-        soundCloudJob?.cancel()
+        val reading = soundCloudJob
+        reading?.cancel()
         val likes = mutableSoundCloudProfile.value?.likesId
         mutableSoundCloudProfile.value = null
         mutableSoundCloudPlaylists.value = emptyList()
         preferences.edit { remove(KEY_SOUNDCLOUD_PROFILE); remove(KEY_SOUNDCLOUD_PLAYLISTS) }
         if (likes != null) {
             mutableDetails.update { it - likes }
-            viewModelScope.launch(Dispatchers.IO) { store.removeDetail(likes) }
+            // After a read in progress has ended, so that it cannot save the likes again.
+            viewModelScope.launch(Dispatchers.IO) { reading?.join(); store.removeDetail(likes) }
         }
     }
 
     /** Reads the linked profile's likes and playlists again. [report] shows a failure instead of keeping it quiet. */
     fun refreshSoundCloudLibrary(report: Boolean = false) {
         val profile = mutableSoundCloudProfile.value ?: return
-        if (!online.value || soundCloudJob?.isActive == true) return
+        if (!online.value) return
+        soundCloudJob?.takeIf { it.isActive }?.let { running ->
+            // A read of this profile is already under way; one of another profile is replaced.
+            if (soundCloudJobProfile == profile.id) return
+            running.cancel()
+        }
+        soundCloudJobProfile = profile.id
         soundCloudJob = viewModelScope.launch {
             mutableSoundCloudLoading.value = true
             try {
-                val library = withContext(Dispatchers.IO) { SoundCloud.library(profile) }
+                // Interruptible: a cancelled read stops its requests instead of reading every page.
+                val library = runInterruptible(Dispatchers.IO) { SoundCloud.library(profile) }
+                // The profile was unlinked or replaced while it was read.
+                if (mutableSoundCloudProfile.value?.id != profile.id) return@launch
                 val likes = Music(
                     profile.likesId, app.getString(`in`.melo.R.string.soundcloud_likes_title), formatSongCount(library.likes.size),
                     MusicKind.Playlist, imageUrl = library.likes.firstOrNull()?.imageUrl ?: profile.avatarUrl,
@@ -434,13 +459,18 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
                 installSoundCloudPlaylists(listOf(likes) + library.playlists)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
+                // An interrupted read fails with an I/O error: a cancelled read reports nothing.
+                ensureActive()
                 `in`.melo.data.diagnostics.DiagnosticLog.record("soundcloud-library", "${failure.javaClass.simpleName} \"${failure.message}\"")
                 mutableDetails.update { details ->
                     val shown = details[profile.likesId] ?: return@update details
                     details + (profile.likesId to DetailUi(shown.content, error = if (shown.content == null) readable(failure) else null))
                 }
                 if (report) mutableMessage.value = readable(failure)
-            } finally { mutableSoundCloudLoading.value = false }
+            } finally {
+                // A cancelled read leaves the indicator to the read that replaced it.
+                if (coroutineContext[Job] == soundCloudJob) mutableSoundCloudLoading.value = false
+            }
         }
     }
 
@@ -2073,8 +2103,10 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
         searchJob = viewModelScope.launch {
             if (debounce) delay(SEARCH_DEBOUNCE_MS)
             val started = android.os.SystemClock.elapsedRealtime()
-            val spotify = remote.takeIf { choice == SearchSource.All || choice == SearchSource.Spotify }
-            val withYouTube = choice == SearchSource.All || choice == SearchSource.YouTubeMusic
+            // A pasted soundcloud.com link opens what it points to; the other services would only search its text.
+            val link = `in`.melo.data.soundcloud.soundCloudLink(query)?.takeIf { choice == SearchSource.All || choice == SearchSource.SoundCloud }
+            val spotify = remote.takeIf { link == null && (choice == SearchSource.All || choice == SearchSource.Spotify) }
+            val withYouTube = link == null && (choice == SearchSource.All || choice == SearchSource.YouTubeMusic)
             val withSoundCloud = choice == SearchSource.All || choice == SearchSource.SoundCloud
             val locale = app.resources.configuration.locales.get(0) ?: Locale.getDefault()
             var spotifyItems: List<Music>? = null
@@ -2124,8 +2156,6 @@ class MeloModel(private val app: Application) : AndroidViewModel(app) {
                 }
             }
             if (withSoundCloud) {
-                // A pasted soundcloud.com link opens what it points to.
-                val link = `in`.melo.data.soundcloud.soundCloudLink(query)
                 source("soundcloud", {
                     withContext(Dispatchers.IO) {
                         if (link != null) SoundCloudPage(listOf(SoundCloud.resolve(link))) else SoundCloud.search(query)

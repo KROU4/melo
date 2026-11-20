@@ -2,6 +2,7 @@ package `in`.melo.playback
 
 import android.content.Context
 import android.net.Uri
+import androidx.core.net.toUri
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
@@ -30,7 +31,7 @@ internal object SoundCloudUris {
 
     fun isSoundCloud(uri: Uri?): Boolean = uri?.scheme == SCHEME
 
-    fun of(track: Music): Uri? = track.soundCloudTrackId?.let { Uri.parse("$SCHEME://track/$it") }
+    fun of(track: Music): Uri? = track.soundCloudTrackId?.let { "$SCHEME://track/$it".toUri() }
 
     /** The file name the caches know this track's audio by. */
     fun fileHex(trackId: String): String = SOUNDCLOUD_FILE_PREFIX + trackId.substringAfterLast(':')
@@ -54,7 +55,12 @@ internal class SoundCloudLayout(
     val segmentSizes: LongArray,
     @Volatile var segmentUrls: List<String>,
     @Volatile var expiresAtMs: Long,
+    /** The encoding laid out: renewed addresses must be those of this encoding, whose sizes the layout holds. */
+    val preset: String = "",
 ) {
+    /** When the addresses were last renewed, on the monotonic clock. */
+    @Volatile var renewedAtMs: Long = 0L
+
     val length: Long = head.size + segmentSizes.sum()
 
     /** The segment holding [position], or -1 inside the head. */
@@ -111,6 +117,8 @@ internal class SoundCloudDataSource private constructor(private val context: Con
             is Prepared.Single -> { direct = prepared.direct; total = prepared.direct.length }
             is Prepared.Elsewhere -> return openElsewhere(dataSpec, prepared.track)
         }
+        // Before the range check: bytes cached from a longer variant must not make this one look out of range.
+        dropOtherVariant(total)
         if (position > total) throw DataSourceException(PlaybackException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE)
         end = if (dataSpec.length != C.LENGTH_UNSET.toLong()) minOf(total, position + dataSpec.length) else total
         AudioIndex.get(context).attachDirectFile(trackKey, AudioFileRecord(SoundCloudUris.fileHex(trackKey), total, ""))
@@ -121,13 +129,35 @@ internal class SoundCloudDataSource private constructor(private val context: Con
 
     /** Plays the YouTube Music match of a track SoundCloud does not stream in full, under the same cache key. */
     private fun openElsewhere(dataSpec: DataSpec, track: Music): Long {
+        val previous = recordedLength()
         // The YouTube source records the file under this track's SoundCloud name (see YouTubeUris.fileHex).
         val source = YouTubeDataSource.Factory(context).createDataSource()
         val length = source.open(dataSpec.buildUpon().setUri(YouTubeUris.match(track)).build())
         fallback = source
+        // The YouTube source records the length of the whole file when it opens. The length it returns
+        // is only that of the range asked for, which the cache often limits to a gap between spans.
+        val total = recordedLength()
+        if (previous > 0 && total > 0 && previous != total) removeCachedAudio()
         opened = true
         transferStarted(dataSpec)
         return length
+    }
+
+    private fun recordedLength(): Long = AudioIndex.get(context).record(trackKey)?.file?.expectedBytes ?: 0L
+
+    /**
+     * One cache key holds this track whichever stream it comes from (the laid-out file, an MP3, or
+     * its YouTube Music match). When SoundCloud changed what it serves, the bytes cached from the
+     * other stream would be mixed with these: they are dropped, and the next read starts clean.
+     */
+    private fun dropOtherVariant(total: Long) {
+        val previous = recordedLength()
+        if (previous > 0 && previous != total) removeCachedAudio()
+    }
+
+    private fun removeCachedAudio() {
+        `in`.melo.data.diagnostics.DiagnosticLog.record("soundcloud-audio", "stream of $trackKey changed, cached audio dropped")
+        runCatching { AudioCache.cache(context).removeResource(SoundCloudUris.cacheKey(trackKey)) }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
@@ -155,7 +185,11 @@ internal class SoundCloudDataSource private constructor(private val context: Con
         val read = input.read(buffer, offset, minOf(length.toLong(), streamLeft, end - position).toInt())
         if (read < 0) {
             // The CDN closed early: continue from where reading stopped, once per opened range.
-            if (!streamYielded) throw IOException("SoundCloud closed the audio stream.")
+            if (!streamYielded) {
+                // Nothing at all where a part should be: the sizes laid out are wrong, lay the track out again.
+                forget(numericId)
+                throw IOException("SoundCloud closed the audio stream.")
+            }
             closeStream()
             openAt(position)
             return read(buffer, offset, length)
@@ -175,7 +209,7 @@ internal class SoundCloudDataSource private constructor(private val context: Con
     private fun openAt(at: Long) {
         closeStream()
         direct?.let { file ->
-            stream = request(file.url, at, file.length - 1).also { streamLeft = file.length - at }
+            stream = request(file.url, at, file.length - 1, DIRECT_FILE).also { streamLeft = file.length - at }
             return
         }
         val current = checkNotNull(layout)
@@ -190,7 +224,7 @@ internal class SoundCloudDataSource private constructor(private val context: Con
         if (local < SEGMENT_HEADER_WINDOW) {
             // Each segment starts with its own index box, which would replace the file's: rename it.
             val window = minOf(SEGMENT_HEADER_WINDOW, size)
-            val start = readFully(segmentUrl(current, segment), 0, window)
+            val start = readFully(segmentUrl(current, segment), 0, window, segment)
             neutralizeSegmentIndex(start)
             memory = start
             memoryOffset = local.toInt()
@@ -201,29 +235,38 @@ internal class SoundCloudDataSource private constructor(private val context: Con
     }
 
     private fun openRange(current: SoundCloudLayout, segment: Int, from: Long, size: Long) {
-        stream = request(segmentUrl(current, segment), from, size - 1)
+        stream = request(segmentUrl(current, segment), from, size - 1, segment)
         streamLeft = size - from
     }
 
     private fun segmentUrl(current: SoundCloudLayout, index: Int): String {
-        if (System.currentTimeMillis() > current.expiresAtMs - EXPIRY_MARGIN_MS) renew(current)
+        // Renewed ahead of expiry, but at most every few minutes: with a device clock running ahead,
+        // every address would look expired. A refused address is renewed anyway (see request).
+        val due = System.currentTimeMillis() > current.expiresAtMs - EXPIRY_MARGIN_MS
+        if (due && android.os.SystemClock.elapsedRealtime() - current.renewedAtMs > MIN_RENEWAL_INTERVAL_MS) renew(current)
         return current.segmentUrls[index]
     }
 
-    /** Signed addresses expired: resolve the track again. Sizes do not change, so the layout stays valid. */
-    private fun renew(current: SoundCloudLayout) {
-        val audio = SoundCloud.audio(numericId) as? SoundCloudAudio.Segmented
-            ?: throw SoundCloudFailure("This track is no longer available.", SoundCloudFailure.STATUS_UNAVAILABLE)
-        if (audio.media.segments.size != current.segmentSizes.size) {
+    /**
+     * Signed addresses expired: resolve the track again, in the encoding laid out, whose segment
+     * sizes the layout holds. Anything else means the track changed: it is laid out again on the
+     * next attempt.
+     */
+    private fun renew(current: SoundCloudLayout) = synchronized(current) {
+        // Another reader of this layout (player, preloader, download) just renewed it.
+        if (android.os.SystemClock.elapsedRealtime() - current.renewedAtMs < RECENT_RENEWAL_MS) return@synchronized
+        val audio = resolveAgain(current.preset)
+        if (audio !is SoundCloudAudio.Segmented || audio.media.segments.size != current.segmentSizes.size) {
             forget(numericId)
             throw IOException("This track changed on SoundCloud.")
         }
         current.segmentUrls = audio.media.segments.map { it.url }
         current.expiresAtMs = audio.expiresAtMs
+        current.renewedAtMs = android.os.SystemClock.elapsedRealtime()
     }
 
-    /** A ranged GET; a refused (expired) address is resolved again once. */
-    private fun request(url: String, from: Long, to: Long): InputStream {
+    /** A ranged GET of [part] (a segment index, or [DIRECT_FILE]); a refused (expired) address is resolved again once. */
+    private fun request(url: String, from: Long, to: Long, part: Int): InputStream {
         var address = url
         repeat(2) { attempt ->
             val call = SoundCloud.http.newCall(Request.Builder().url(address).header("Range", "bytes=$from-$to").build())
@@ -233,27 +276,43 @@ internal class SoundCloudDataSource private constructor(private val context: Con
                 return answer.body?.byteStream() ?: throw IOException("Empty answer from SoundCloud.")
             }
             answer.close()
+            // A range past the end: the sizes laid out are wrong, lay the track out again.
+            if (answer.code == 416) forget(numericId)
             if (answer.code !in REFUSED || attempt > 0) throw SoundCloudFailure("SoundCloud answered ${answer.code}.", "HTTP_${answer.code}")
-            address = renewedAddress(url)
+            address = renewedAddress(part)
         }
         throw IOException("SoundCloud refused the audio.")
     }
 
-    private fun renewedAddress(stale: String): String {
+    private fun renewedAddress(part: Int): String {
         direct?.let { file ->
-            val audio = SoundCloud.audio(numericId) as? SoundCloudAudio.Progressive
-                ?: throw SoundCloudFailure("This track is no longer available.", SoundCloudFailure.STATUS_UNAVAILABLE)
+            val audio = resolveAgain(file.preset)
+            if (audio !is SoundCloudAudio.Progressive) {
+                forget(numericId)
+                throw IOException("This track changed on SoundCloud.")
+            }
             file.url = audio.url
             return audio.url
         }
         val current = checkNotNull(layout)
-        val index = current.segmentUrls.indexOf(stale)
         renew(current)
-        return if (index >= 0) current.segmentUrls[index] else throw IOException("This track changed on SoundCloud.")
+        return current.segmentUrls[part]
     }
 
-    private fun readFully(url: String, from: Long, count: Long): ByteArray {
-        val input = request(url, from, from + count - 1)
+    /**
+     * Resolves the track again in the encoding being read. When SoundCloud no longer serves it (the
+     * encoding was dropped, the track was blocked or limited to a preview), the layout is forgotten,
+     * so the next attempt lays the track out from scratch, or plays it from YouTube Music.
+     */
+    private fun resolveAgain(preset: String): SoundCloudAudio = try {
+        SoundCloud.audio(numericId, preset.ifEmpty { null })
+    } catch (failure: SoundCloudFailure) {
+        if (failure.status in SoundCloudFailure.PERMANENT) forget(numericId)
+        throw failure
+    }
+
+    private fun readFully(url: String, from: Long, count: Long, part: Int): ByteArray {
+        val input = request(url, from, from + count - 1, part)
         val bytes = ByteArray(count.toInt())
         var filled = 0
         try {
@@ -291,7 +350,7 @@ internal class SoundCloudDataSource private constructor(private val context: Con
     }
 
     /** A progressive MP3 file. */
-    internal class Direct(@Volatile var url: String, val length: Long)
+    internal class Direct(@Volatile var url: String, val length: Long, val preset: String = "")
 
     private sealed interface Prepared {
         class Layout(val layout: SoundCloudLayout) : Prepared
@@ -302,23 +361,42 @@ internal class SoundCloudDataSource private constructor(private val context: Con
     companion object {
         /** Long enough for the `styp` and `sidx` boxes that open every segment. */
         const val SEGMENT_HEADER_WINDOW = 4096L
+        private const val DIRECT_FILE = -1
         private const val EXPIRY_MARGIN_MS = 60_000L
+        private const val MIN_RENEWAL_INTERVAL_MS = 2 * 60_000L
+        private const val RECENT_RENEWAL_MS = 10_000L
         private val REFUSED = setOf(401, 403, 404, 410)
         private const val MAX_LAYOUTS = 24
         private val layouts = object : LinkedHashMap<Long, Prepared>(16, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<Long, Prepared>?) = size > MAX_LAYOUTS
         }
+        /** One lock per track being laid out: the player, the preloader and a download share one layout. */
+        private val preparing = java.util.concurrent.ConcurrentHashMap<Long, Any>()
 
         private fun forget(id: Long) = synchronized(layouts) { layouts.remove(id) }
 
         /** Builds (or reuses) the layout of a track. Layouts outlive their addresses, which are renewed on demand. */
         private fun prepare(id: Long): Prepared {
             synchronized(layouts) { layouts[id] }?.let { return it }
-            val prepared = when (val audio = SoundCloud.audio(id)) {
+            val lock = preparing.getOrPut(id) { Any() }
+            try {
+                synchronized(lock) {
+                    synchronized(layouts) { layouts[id] }?.let { return it }
+                    val prepared = layOut(id)
+                    synchronized(layouts) { layouts[id] = prepared }
+                    return prepared
+                }
+            } finally {
+                preparing.remove(id, lock)
+            }
+        }
+
+        private fun layOut(id: Long): Prepared =
+            when (val audio = SoundCloud.audio(id)) {
                 is SoundCloudAudio.Elsewhere -> Prepared.Elsewhere(audio.track)
                 is SoundCloudAudio.Progressive -> {
                     val length = SoundCloud.contentLengths(listOf(audio.url))[0]
-                    Prepared.Single(Direct(audio.url, length))
+                    Prepared.Single(Direct(audio.url, length, audio.preset))
                 }
                 is SoundCloudAudio.Segmented -> {
                     val segments = audio.media.segments
@@ -329,12 +407,10 @@ internal class SoundCloudDataSource private constructor(private val context: Con
                     val offsets = LongArray(sizes.size)
                     var offset = head.size.toLong()
                     sizes.forEachIndexed { i, size -> offsets[i] = offset; offset += size }
-                    Prepared.Layout(SoundCloudLayout(head, offsets, sizes, segments.map { it.url }, audio.expiresAtMs))
+                    Prepared.Layout(SoundCloudLayout(head, offsets, sizes, segments.map { it.url }, audio.expiresAtMs, audio.preset)
+                        .apply { renewedAtMs = android.os.SystemClock.elapsedRealtime() })
                 }
             }
-            synchronized(layouts) { layouts[id] = prepared }
-            return prepared
-        }
     }
 }
 

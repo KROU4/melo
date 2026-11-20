@@ -56,7 +56,7 @@ internal data class HlsMedia(val initUrl: String, val segments: List<HlsSegment>
 internal fun soundCloudScriptUrls(html: String): List<String> =
     SCRIPT_SRC.findAll(html).map { it.groupValues[1] }.filter { it.contains("sndcdn.com") }.distinct().toList()
 
-/** The public web client id a script bundle carries, if any. */
+/** The public web client id a script bundle (`client_id:"…"`) or the mobile page (`"clientId":"…"`) carries, if any. */
 internal fun extractSoundCloudClientId(script: String): String? =
     CLIENT_ID.find(script)?.groupValues?.get(1)
 
@@ -79,7 +79,10 @@ internal fun playableTranscodings(track: JSONObject): List<SoundCloudTranscoding
         .sortedWith(compareByDescending<SoundCloudTranscoding> { it.isFragmentedAac }.thenByDescending { it.bitrate })
 }
 
-/** Parses a media playlist. Null for encrypted playlists and for any layout other than fMP4 segments. */
+/**
+ * Parses a media playlist. Null for encrypted playlists, byte-range playlists (one file cut in
+ * ranges) and any layout other than whole fMP4 segment files.
+ */
 internal fun parseSoundCloudHls(text: String, playlistUrl: String): HlsMedia? {
     var init: String? = null
     var duration: Long? = null
@@ -87,7 +90,11 @@ internal fun parseSoundCloudHls(text: String, playlistUrl: String): HlsMedia? {
     text.lineSequence().map(String::trim).forEach { line ->
         when {
             line.startsWith("#EXT-X-KEY:") -> if (!line.contains("METHOD=NONE")) return null
-            line.startsWith("#EXT-X-MAP:") -> init = HLS_URI.find(line)?.groupValues?.get(1)?.let { resolveUrl(playlistUrl, it) }
+            line.startsWith("#EXT-X-BYTERANGE") -> return null
+            line.startsWith("#EXT-X-MAP:") -> {
+                if (line.contains("BYTERANGE=")) return null
+                init = HLS_URI.find(line)?.groupValues?.get(1)?.let { resolveUrl(playlistUrl, it) }
+            }
             line.startsWith("#EXTINF:") -> duration = line.removePrefix("#EXTINF:").substringBefore(',').trim()
                 .toBigDecimalOrNull()?.movePointRight(6)?.toLong()
             line.isNotEmpty() && !line.startsWith("#") -> {
@@ -260,7 +267,7 @@ private fun resolveUrl(base: String, reference: String): String =
 
 private val ALBUM_TYPES = setOf("album", "ep", "single", "compilation")
 private val SCRIPT_SRC = Regex("""<script[^>]+src="([^"]+\.js)"""")
-private val CLIENT_ID = Regex("""client_id\s*[:=]\s*"?([A-Za-z0-9]{32})\b""")
+private val CLIENT_ID = Regex("""(?:client_id\s*[:=]\s*"?|"clientId"\s*:\s*")([A-Za-z0-9]{32})\b""")
 private val HLS_URI = Regex("""URI="([^"]+)"""")
 private val EXPIRES = Regex("""[?&](?:expires|Expires)=(\d+)""")
 private val SOUNDCLOUD_URL = Regex("""https?://((?:www\.|m\.)?soundcloud\.com|on\.soundcloud\.com|snd\.sc)(/[^\s]*)?""", RegexOption.IGNORE_CASE)

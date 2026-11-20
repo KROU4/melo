@@ -1,6 +1,8 @@
 package `in`.melo.data.soundcloud
 
+import android.annotation.SuppressLint
 import android.content.Context
+import android.os.SystemClock
 import androidx.core.content.edit
 import `in`.melo.data.ArtistProfile
 import `in`.melo.data.CatalogDetail
@@ -60,7 +62,7 @@ internal sealed interface SoundCloudAudio {
     data class Segmented(val media: HlsMedia, val preset: String, val expiresAtMs: Long) : SoundCloudAudio
 
     /** A single MP3 file at a signed address. */
-    data class Progressive(val url: String, val expiresAtMs: Long) : SoundCloudAudio
+    data class Progressive(val url: String, val preset: String, val expiresAtMs: Long) : SoundCloudAudio
 
     /** No full-length stream for this client (a Go+ preview, a protected or blocked track). */
     data class Elsewhere(val track: Music, val policy: String) : SoundCloudAudio
@@ -69,8 +71,9 @@ internal sealed interface SoundCloudAudio {
 /**
  * SoundCloud's public catalogue through api-v2, the API soundcloud.com itself uses, with the web
  * client id read from the site's scripts. Anonymous: no account, nothing is written to SoundCloud.
- * Every call blocks: run it on an IO thread.
+ * Every call blocks: run it on an IO thread. Holds only the application context (see [init]).
  */
+@SuppressLint("StaticFieldLeak")
 object SoundCloud {
     private var app: Context? = null
 
@@ -93,7 +96,12 @@ object SoundCloud {
     @Volatile private var permalinksLoaded = false
     @Volatile private var permalinksDirty = false
 
-    fun init(context: Context) { if (app == null) app = context.applicationContext }
+    fun init(context: Context) {
+        if (app != null) return
+        app = context.applicationContext
+        // Remembered page addresses are read off the main thread, before sharing needs them.
+        Thread(::loadPermalinks, "soundcloud-permalinks").start()
+    }
 
     // Client id -----------------------------------------------------------------------------------
 
@@ -101,24 +109,56 @@ object SoundCloud {
         ?: preferences?.getString(KEY_CLIENT_ID, null)?.takeIf { it.length == 32 }?.also { clientId = it }
         ?: renewClientId(null)
 
-    /** Reads the current web client id from soundcloud.com, unless another thread already replaced [stale]. */
+    // On the monotonic clock, so that a device clock set back does not block renewals.
+    @Volatile private var lastRenewalMs = -MIN_RENEWAL_INTERVAL_MS
+    @Volatile private var lastFailureMs = -MIN_RENEWAL_INTERVAL_MS
+
+    /**
+     * Reads the current web client id from soundcloud.com, unless another thread already replaced
+     * [stale]. When the site still gives [stale], the refusal had another cause: it is not retried.
+     * A site that gave no id is not read again for a minute, however many requests are waiting.
+     */
     private fun renewClientId(stale: String?): String = synchronized(clientLock) {
         clientId?.takeIf { it != stale }?.let { return it }
-        val page = text("https://soundcloud.com/")
-        // The id lives in one of the last bundles; reading from the end finds it in one or two requests.
-        for (script in soundCloudScriptUrls(page).asReversed()) {
-            val found = runCatching { text(script) }.getOrNull()?.let(::extractSoundCloudClientId) ?: continue
-            clientId = found
-            preferences?.edit { putString(KEY_CLIENT_ID, found) }
-            return found
+        val now = SystemClock.elapsedRealtime()
+        if (stale != null && now - lastRenewalMs < MIN_RENEWAL_INTERVAL_MS) {
+            throw SoundCloudFailure("SoundCloud refused the request.", SoundCloudFailure.STATUS_REFUSED)
         }
-        DiagnosticLog.record("soundcloud", "client id not found in ${soundCloudScriptUrls(page).size} scripts")
-        throw SoundCloudFailure("SoundCloud could not be reached.", SoundCloudFailure.STATUS_CLIENT)
+        if (now - lastFailureMs < MIN_RENEWAL_INTERVAL_MS) {
+            throw SoundCloudFailure("SoundCloud could not be reached.", SoundCloudFailure.STATUS_CLIENT)
+        }
+        lastRenewalMs = now
+        // The mobile page may keep giving the refused id while the desktop scripts have the new one.
+        val found = findClientId(AGENT)?.takeIf { it != stale } ?: findClientId(DESKTOP_AGENT)
+        if (found == null) {
+            lastFailureMs = now
+            DiagnosticLog.record("soundcloud", "client id not found")
+            throw SoundCloudFailure("SoundCloud could not be reached.", SoundCloudFailure.STATUS_CLIENT)
+        }
+        if (found == stale) throw SoundCloudFailure("SoundCloud refused the request.", SoundCloudFailure.STATUS_REFUSED)
+        clientId = found
+        preferences?.edit { putString(KEY_CLIENT_ID, found) }
+        return found
+    }
+
+    /**
+     * The mobile site names the id in the page itself; the desktop site defines it in one of its
+     * last script bundles, so reading them from the end finds it in one or two requests.
+     */
+    private fun findClientId(agent: String): String? {
+        val page = runCatching { text("https://soundcloud.com/", agent) }.getOrNull() ?: return null
+        extractSoundCloudClientId(page)?.let { return it }
+        val scripts = soundCloudScriptUrls(page)
+        for (script in scripts.asReversed().take(MAX_CLIENT_SCRIPTS)) {
+            runCatching { text(script, agent) }.getOrNull()?.let(::extractSoundCloudClientId)?.let { return it }
+        }
+        DiagnosticLog.record("soundcloud", "no client id in the page or its ${scripts.size} scripts")
+        return null
     }
 
     // Requests ------------------------------------------------------------------------------------
 
-    private fun text(url: String): String = http.newCall(Request.Builder().url(url).header("User-Agent", AGENT).build()).execute().use { response ->
+    private fun text(url: String, agent: String = AGENT): String = http.newCall(Request.Builder().url(url).header("User-Agent", agent).build()).execute().use { response ->
         if (!response.isSuccessful) throw SoundCloudFailure("SoundCloud answered ${response.code}.", "HTTP_${response.code}")
         response.body?.string() ?: ""
     }
@@ -272,17 +312,26 @@ object SoundCloud {
         )
     }
 
-    /** The public likes and playlists of a profile. */
+    /**
+     * The public likes and playlists of a profile. Any page that cannot be read fails the whole
+     * read, so a partial library never replaces the one already shown.
+     */
     fun library(profile: SoundCloudProfile): SoundCloudLibrary {
         val liked = ArrayList<Music>()
         var page: JSONObject? = apiObject("users/${profile.id}/likes", mapOf("limit" to "$LIKES_PAGE", "linked_partitioning" to "1"))
         var pages = 0
         while (page != null && pages++ < MAX_LIKE_PAGES) {
             liked += parseSoundCloudLikes(page)
-            page = soundCloudNext(page)?.let { runCatching { apiObject(it) }.getOrNull() }
+            page = soundCloudNext(page)?.let(::apiObject)
         }
         val own = listOf("users/${profile.id}/playlists_without_albums", "users/${profile.id}/albums").flatMap { path ->
-            runCatching { parseSoundCloudCollection(apiObject(path, mapOf("limit" to "$USER_RELEASES"))) }.getOrDefault(emptyList())
+            try {
+                parseSoundCloudCollection(apiObject(path, mapOf("limit" to "$USER_RELEASES")))
+            } catch (missing: SoundCloudFailure) {
+                // Some profiles have no such list at all: that is an empty list, not a failed read.
+                if (missing.status != SoundCloudFailure.STATUS_NOT_FOUND) throw missing
+                emptyList()
+            }
         }
         val likedTracks = liked.filter { it.kind == MusicKind.Track }.distinctBy(Music::id)
         val playlists = (own + liked.filter { it.kind != MusicKind.Track }).distinctBy(Music::id)
@@ -292,22 +341,51 @@ object SoundCloud {
 
     // Audio ---------------------------------------------------------------------------------------
 
-    /** Where a track's audio is now. Addresses are signed for a limited time: resolve again when they expire. */
-    internal fun audio(trackId: Long): SoundCloudAudio {
+    /**
+     * Where a track's audio is now. Addresses are signed for a limited time: resolve again when they
+     * expire, with the [preset] already being read, so the bytes stay those of the same encoding.
+     *
+     * [SoundCloudAudio.Elsewhere] only means SoundCloud has no full stream Melo can read for this
+     * track: none is offered, or every one offered is refused or missing (regional limits). Any
+     * other failure is thrown, so a passing network error never sends the track to another source.
+     *
+     * When [preset] is no longer offered, a [SoundCloudFailure] with
+     * [SoundCloudFailure.STATUS_UNAVAILABLE] is thrown: what was laid out for it is obsolete.
+     */
+    internal fun audio(trackId: Long, preset: String? = null): SoundCloudAudio {
         val json = apiObject("tracks/$trackId")
         val track = parseSoundCloudTrack(json) ?: throw SoundCloudFailure("This track is unavailable.", SoundCloudFailure.STATUS_NOT_FOUND)
         val authorization = json.text("track_authorization")
-        for (choice in playableTranscodings(json)) {
-            val parameters = if (authorization.isEmpty()) emptyMap() else mapOf("track_authorization" to authorization)
-            val located = runCatching { JSONObject(api(choice.url, parameters)).text("url") }.getOrNull()
-                ?.takeIf { it.startsWith("https://") } ?: continue
-            val expires = signedUrlExpiryMs(located) ?: (System.currentTimeMillis() + DEFAULT_LIFETIME_MS)
-            if (choice.isProgressiveMp3) return SoundCloudAudio.Progressive(located, expires)
-            val media = runCatching { parseSoundCloudHls(text(located), located) }.getOrNull() ?: continue
-            return SoundCloudAudio.Segmented(media, choice.preset, expires)
+        val parameters = if (authorization.isEmpty()) emptyMap() else mapOf("track_authorization" to authorization)
+        val choices = playableTranscodings(json).filter { preset == null || it.preset == preset }
+        var failure: IOException? = null
+        var transient = false
+        for (choice in choices) {
+            try {
+                val located = JSONObject(api(choice.url, parameters)).text("url").takeIf { it.startsWith("https://") } ?: continue
+                val expires = signedUrlExpiryMs(located) ?: (System.currentTimeMillis() + DEFAULT_LIFETIME_MS)
+                if (choice.isProgressiveMp3) return SoundCloudAudio.Progressive(located, choice.preset, expires)
+                // A playlist Melo cannot lay out (encrypted, byte ranges) moves on to the next encoding.
+                val media = parseSoundCloudHls(text(located), located) ?: continue
+                return SoundCloudAudio.Segmented(media, choice.preset, expires)
+            } catch (error: IOException) {
+                failure = failure ?: error
+                if (!meansNoStream(error)) transient = true
+            } catch (error: org.json.JSONException) {
+                failure = failure ?: IOException("SoundCloud sent an unreadable answer.", error)
+                transient = true
+            }
+        }
+        if (transient) failure?.let { throw it }
+        if (preset != null) {
+            throw SoundCloudFailure("SoundCloud no longer offers this encoding of the track.", SoundCloudFailure.STATUS_UNAVAILABLE)
         }
         return SoundCloudAudio.Elsewhere(track, json.text("policy"))
     }
+
+    /** A stream refused or missing for good, as opposed to a network or service failure worth retrying. */
+    private fun meansNoStream(error: IOException): Boolean =
+        error is SoundCloudFailure && error.status in NO_STREAM
 
     /** Sizes of files at signed addresses, read in parallel with HEAD requests. */
     internal fun contentLengths(urls: List<String>): LongArray {
@@ -331,7 +409,12 @@ object SoundCloud {
             }
         }
         try {
-            if (!done.await(HEAD_TIMEOUT_S, TimeUnit.SECONDS)) throw IOException("SoundCloud did not answer in time.")
+            // Sixteen requests run at once: long mixes with hundreds of segments get more time.
+            val budget = HEAD_TIMEOUT_S + urls.size / HEADS_PER_EXTRA_SECOND
+            if (!done.await(budget, TimeUnit.SECONDS)) {
+                calls.forEach(Call::cancel)
+                throw IOException("SoundCloud did not answer in time.")
+            }
         } catch (interrupted: InterruptedException) {
             calls.forEach(Call::cancel)
             Thread.currentThread().interrupt()
@@ -374,11 +457,17 @@ object SoundCloud {
 
     private fun loadPermalinks() {
         if (permalinksLoaded) return
-        val stored = preferences?.getString(KEY_PERMALINKS, null)
-        permalinksLoaded = true
-        if (stored != null) runCatching {
-            val json = JSONObject(stored)
-            synchronized(permalinks) { json.keys().forEach { key -> permalinks.putIfAbsent(key, json.getString(key)) } }
+        val preferences = preferences ?: return
+        synchronized(permalinks) {
+            if (permalinksLoaded) return
+            preferences.getString(KEY_PERMALINKS, null)?.let { stored ->
+                runCatching {
+                    val json = JSONObject(stored)
+                    json.keys().forEach { key -> permalinks.putIfAbsent(key, json.getString(key)) }
+                }
+            }
+            // Set once the map is filled, so a concurrent reader never sees an empty map as loaded.
+            permalinksLoaded = true
         }
     }
 
@@ -392,6 +481,16 @@ object SoundCloud {
 
     private const val API = "https://api-v2.soundcloud.com"
     private const val AGENT = "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Mobile Safari/537.36"
+    private const val DESKTOP_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
+    private const val MAX_CLIENT_SCRIPTS = 12
+    private const val MIN_RENEWAL_INTERVAL_MS = 60_000L
+    /**
+     * Answers that mean a stream is not served to this client, whatever the retry. REFUSED is only
+     * thrown once the client id was renewed or found current (see [api]): the refusal is the stream's.
+     * HTTP_* come from the CDN that serves the playlist.
+     */
+    private val NO_STREAM = setOf(SoundCloudFailure.STATUS_NOT_FOUND, SoundCloudFailure.STATUS_REFUSED, "HTTP_403", "HTTP_404", "HTTP_410")
+    private const val HEADS_PER_EXTRA_SECOND = 8
     private const val PREFERENCES = "soundcloud"
     private const val KEY_CLIENT_ID = "client_id"
     private const val KEY_PERMALINKS = "permalinks"
